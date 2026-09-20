@@ -22,3 +22,6 @@ compile_commands.json
 *.qmlc
 *.jsc
 .qmlcache/
+
+# 开发者工具输出（--db-check 报告）
+dbcheck.log

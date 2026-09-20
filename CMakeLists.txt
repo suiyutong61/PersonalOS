@@ -6,13 +6,18 @@ project(PersonOS VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
 qt_add_executable(appPersonOS
     src/application/main.cpp
+    src/database/DatabaseManager.cpp
+    src/database/DatabaseManager.h
 )
+
+# 源码头文件统一以 src 为根：如 #include "database/DatabaseManager.h"
+target_include_directories(appPersonOS PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 qt_add_qml_module(appPersonOS
     URI PersonOS
@@ -34,6 +39,7 @@ set_target_properties(appPersonOS PROPERTIES
 
 target_link_libraries(appPersonOS
     PRIVATE Qt6::Quick
+    PRIVATE Qt6::Sql
 )
 
 install(TARGETS appPersonOS

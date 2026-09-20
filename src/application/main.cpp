@@ -1,9 +1,69 @@
+#include <QFile>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QStringList>
+
+#include "database/DatabaseManager.h"
+
+namespace {
+
+// 开发者工具：appPersonOS --db-check（README 3.4）
+// 无界面验证数据库。GUI 子系统程序没有控制台输出，结果写入当前目录的
+// dbcheck.log（路径、schema 版本、数据表清单）；退出码 0=OK，1=失败。
+int runDbCheck()
+{
+    QStringList lines;
+    int exitCode = 0;
+
+    DatabaseManager &db = DatabaseManager::instance();
+    if (!db.open()) {
+        lines << QStringLiteral("数据库打开失败: %1").arg(db.lastError());
+        lines << QStringLiteral("RESULT: FAIL");
+        exitCode = 1;
+    } else {
+        lines << QStringLiteral("数据库路径: %1").arg(db.databasePath());
+        lines << QStringLiteral("schema 版本: %1").arg(db.schemaVersion());
+        lines << QStringLiteral("数据表:");
+
+        QSqlQuery q(db.database());
+        if (q.exec(QStringLiteral(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"))) {
+            while (q.next())
+                lines << QStringLiteral("  - %1").arg(q.value(0).toString());
+        } else {
+            lines << QStringLiteral("  (查询失败: %1)").arg(q.lastError().text());
+            exitCode = 1;
+        }
+        lines << QStringLiteral("RESULT: %1").arg(exitCode == 0 ? QStringLiteral("OK")
+                                                                : QStringLiteral("FAIL"));
+    }
+
+    QFile report(QStringLiteral("dbcheck.log"));
+    if (report.open(QIODevice::WriteOnly | QIODevice::Text))
+        report.write(lines.join(u'\n').toUtf8());
+
+    return exitCode;
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
+
+    // 应用标识：决定 QStandardPaths::AppDataLocation 数据目录
+    app.setOrganizationName(QStringLiteral("PersonalOS"));
+    app.setApplicationName(QStringLiteral("PersonalOS"));
+
+    if (app.arguments().contains(QStringLiteral("--db-check")))
+        return runDbCheck();
+
+    if (!DatabaseManager::instance().open()) {
+        qCritical().noquote() << "数据库打开失败:" << DatabaseManager::instance().lastError();
+        return 1;
+    }
 
     QQmlApplicationEngine engine;
     QObject::connect(
