@@ -84,6 +84,8 @@ bool CoreAndGoalService::validateParent(qint64 goalId, qint64 parentId, QString 
 
 qint64 CoreAndGoalService::createGoal(const Goal &g, QString *error)
 {
+    if (error)
+        error->clear();
     if (!g.isValid()) {
         setError(error, QStringLiteral("目标标题不能为空"));
         return 0;
@@ -97,6 +99,8 @@ qint64 CoreAndGoalService::createGoal(const Goal &g, QString *error)
 
 bool CoreAndGoalService::updateGoal(const Goal &g, QString *error)
 {
+    if (error)
+        error->clear();
     if (!g.isValid()) {
         setError(error, QStringLiteral("目标标题不能为空"));
         return false;
@@ -121,6 +125,8 @@ std::vector<CoreValue> CoreAndGoalService::coreValues() const
 
 qint64 CoreAndGoalService::createCoreValue(const CoreValue &v, QString *error)
 {
+    if (error)
+        error->clear();
     if (v.name.trimmed().isEmpty()) {
         setError(error, QStringLiteral("核心价值名称不能为空"));
         return 0;
@@ -133,6 +139,8 @@ qint64 CoreAndGoalService::createCoreValue(const CoreValue &v, QString *error)
 
 bool CoreAndGoalService::updateCoreValue(const CoreValue &v, QString *error)
 {
+    if (error)
+        error->clear();
     if (v.name.trimmed().isEmpty()) {
         setError(error, QStringLiteral("核心价值名称不能为空"));
         return false;
@@ -153,6 +161,8 @@ std::vector<Principle> CoreAndGoalService::principles() const
 
 qint64 CoreAndGoalService::createPrinciple(const Principle &p, QString *error)
 {
+    if (error)
+        error->clear();
     if (p.text.trimmed().isEmpty()) {
         setError(error, QStringLiteral("原则内容不能为空"));
         return 0;
@@ -165,6 +175,8 @@ qint64 CoreAndGoalService::createPrinciple(const Principle &p, QString *error)
 
 bool CoreAndGoalService::updatePrinciple(const Principle &p, QString *error)
 {
+    if (error)
+        error->clear();
     if (p.text.trimmed().isEmpty()) {
         setError(error, QStringLiteral("原则内容不能为空"));
         return false;

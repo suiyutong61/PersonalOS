@@ -21,10 +21,14 @@ qt_add_library(personos_core STATIC
     src/database/PrincipleRepository.h
     src/database/GoalRepository.cpp
     src/database/GoalRepository.h
+    src/database/PlanRepository.cpp
+    src/database/PlanRepository.h
     src/database/StateRepository.cpp
     src/database/StateRepository.h
     src/goals/CoreAndGoalService.cpp
     src/goals/CoreAndGoalService.h
+    src/planning/PlanningService.cpp
+    src/planning/PlanningService.h
     src/state/StateService.cpp
     src/state/StateService.h
     src/models/ChangeLog.h
@@ -96,6 +100,16 @@ qt_add_executable(smoke_state
 )
 
 target_link_libraries(smoke_state
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+qt_add_executable(smoke_planning
+    tests/planning_smoke.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(smoke_planning
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )

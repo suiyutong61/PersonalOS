@@ -61,6 +61,8 @@ bool StateService::validate(const StateSnapshot &s, QString *error) const
 
 bool StateService::record(const StateSnapshot &s, QString *error)
 {
+    if (error)
+        error->clear();
     if (!validate(s, error))
         return false;
     if (!m_repo.upsert(s)) {
