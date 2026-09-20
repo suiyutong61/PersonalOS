@@ -27,6 +27,8 @@ qt_add_library(personos_core STATIC
     src/database/EventRepository.h
     src/database/PlanRepository.cpp
     src/database/PlanRepository.h
+    src/database/ReviewRepository.cpp
+    src/database/ReviewRepository.h
     src/database/StateRepository.cpp
     src/database/StateRepository.h
     src/database/TaskRepository.cpp
@@ -39,6 +41,8 @@ qt_add_library(personos_core STATIC
     src/goals/CoreAndGoalService.h
     src/planning/PlanningService.cpp
     src/planning/PlanningService.h
+    src/review/ReviewService.cpp
+    src/review/ReviewService.h
     src/state/StateService.cpp
     src/state/StateService.h
     src/models/ChangeLog.h
@@ -140,6 +144,16 @@ qt_add_executable(smoke_feedback
 )
 
 target_link_libraries(smoke_feedback
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+qt_add_executable(smoke_review
+    tests/review_smoke.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(smoke_review
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )
