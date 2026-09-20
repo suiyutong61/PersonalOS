@@ -1,0 +1,24 @@
+# 构建产物
+build*/
+CMakeFiles/
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.so
+*.dylib
+
+# Qt Creator 用户级配置
+.qtcreator/
+CMakeLists.txt.user*
+
+# 编译数据库与 IDE 索引
+compile_commands.json
+.cache/
+.clangd/
+
+# Qt 运行时生成
+*.qmlc
+*.jsc
+.qmlcache/
