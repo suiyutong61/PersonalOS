@@ -6,7 +6,7 @@ project(PersonOS VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Sql Network)
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql Network Test)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
@@ -56,6 +56,10 @@ qt_add_library(personos_core STATIC
     src/planning/PlanningService.h
     src/review/ReviewService.cpp
     src/review/ReviewService.h
+    src/services/ApplicationService.cpp
+    src/services/ApplicationService.h
+    src/services/Items.cpp
+    src/services/Items.h
     src/state/StateService.cpp
     src/state/StateService.h
     src/models/ChangeLog.h
@@ -85,6 +89,10 @@ qt_add_qml_module(appPersonOS
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/pages/TodayPage.qml
+        qml/pages/GoalsPage.qml
+        qml/pages/StatePage.qml
+        qml/pages/ReviewPage.qml
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -190,3 +198,28 @@ target_link_libraries(smoke_evolution
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )
+
+# ================= MVP 闭环验收测试（Qt Test，README 3.14）=================
+qt_add_executable(tst_mvp_loop
+    tests/tst_mvp_loop.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(tst_mvp_loop
+    PRIVATE Qt6::Test
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+# ================= ctest 一键回归 =================
+enable_testing()
+
+add_test(NAME smoke_goals     COMMAND smoke_goals)
+add_test(NAME smoke_state     COMMAND smoke_state)
+add_test(NAME smoke_planning  COMMAND smoke_planning)
+add_test(NAME smoke_execution COMMAND smoke_execution)
+add_test(NAME smoke_feedback  COMMAND smoke_feedback)
+add_test(NAME smoke_review    COMMAND smoke_review)
+add_test(NAME smoke_evolution COMMAND smoke_evolution)
+add_test(NAME tst_mvp_loop    COMMAND tst_mvp_loop)
+# 注：smoke_ai 需要网络与 API key，未加入 ctest；手动运行 build 目录下的 smoke_ai.exe
