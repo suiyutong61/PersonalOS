@@ -22,6 +22,11 @@ DatabaseManager &DatabaseManager::instance()
 
 QString DatabaseManager::databasePath() const
 {
+    // 测试隔离：设置 PERSONOS_DB_PATH 环境变量后使用指定文件（冒烟测试用）
+    const QString overridePath = qEnvironmentVariable("PERSONOS_DB_PATH");
+    if (!overridePath.isEmpty())
+        return overridePath;
+
     // AppLocalDataLocation：Windows 上为 %LOCALAPPDATA%/PersonalOS/PersonalOS/personos.db
     // （注意：AppDataLocation 默认指向 Roaming，本地大文件数据库用 Local 更合适）
     return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
