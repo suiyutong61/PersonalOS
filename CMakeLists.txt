@@ -34,12 +34,18 @@ qt_add_library(personos_core STATIC
     src/database/EventRepository.h
     src/database/PlanRepository.cpp
     src/database/PlanRepository.h
+    src/database/ProposalRepository.cpp
+    src/database/ProposalRepository.h
     src/database/ReviewRepository.cpp
     src/database/ReviewRepository.h
     src/database/StateRepository.cpp
     src/database/StateRepository.h
     src/database/TaskRepository.cpp
     src/database/TaskRepository.h
+    src/database/VersionRepository.cpp
+    src/database/VersionRepository.h
+    src/evolution/EvolutionService.cpp
+    src/evolution/EvolutionService.h
     src/execution/ExecutionService.cpp
     src/execution/ExecutionService.h
     src/feedback/FeedbackService.cpp
@@ -171,6 +177,16 @@ qt_add_executable(smoke_ai
 )
 
 target_link_libraries(smoke_ai
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+qt_add_executable(smoke_evolution
+    tests/evolution_smoke.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(smoke_evolution
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )
