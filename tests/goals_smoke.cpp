@@ -1,30 +1,18 @@
 // Step 5 冒烟测试（控制台程序，README 3.6）
 // 覆盖：GoalRepository / CoreValueRepository / PrincipleRepository / CoreAndGoalService
 // 使用独立测试库（PERSONOS_DB_PATH 指向临时文件），不污染真实数据。
-#include <cstdio>
-
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 
+#include "TestLogging.h"
 #include "database/DatabaseManager.h"
 #include "goals/CoreAndGoalService.h"
 
 using namespace PersonOS;
 
 namespace {
-
-// Qt 6 在 Windows"无控制台"环境下默认不向 stderr 输出日志
-// （写入 OutputDebugString，终端不可见，README 3.6 踩坑记录）。
-// 测试程序安装自定义消息处理器，保证输出始终可见。
-void installTestMessageHandler()
-{
-    qInstallMessageHandler([](QtMsgType, const QMessageLogContext &, const QString &msg) {
-        std::fprintf(stderr, "%s\n", msg.toUtf8().constData());
-        std::fflush(stderr);
-    });
-}
 
 int g_failures = 0;
 
@@ -42,7 +30,7 @@ void check(bool ok, const QString &name)
 
 int main(int argc, char *argv[])
 {
-    installTestMessageHandler();
+    Test::installMessageHandler();
 
     QCoreApplication app(argc, argv);
 

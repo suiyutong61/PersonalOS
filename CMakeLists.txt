@@ -21,8 +21,12 @@ qt_add_library(personos_core STATIC
     src/database/PrincipleRepository.h
     src/database/GoalRepository.cpp
     src/database/GoalRepository.h
+    src/database/StateRepository.cpp
+    src/database/StateRepository.h
     src/goals/CoreAndGoalService.cpp
     src/goals/CoreAndGoalService.h
+    src/state/StateService.cpp
+    src/state/StateService.h
     src/models/ChangeLog.h
     src/models/CoreValue.h
     src/models/Event.h
@@ -75,12 +79,23 @@ install(TARGETS appPersonOS
 )
 
 # ================= 冒烟测试（控制台程序，输出可见）=================
-# 逐步添加：Step 5 goals_smoke；Step 13 起改为 Qt Test 完整测试
+# 逐步添加：Step 5 goals_smoke；Step 6 state_smoke；Step 13 起改为 Qt Test 完整测试
 qt_add_executable(smoke_goals
     tests/goals_smoke.cpp
+    tests/TestLogging.h
 )
 
 target_link_libraries(smoke_goals
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+qt_add_executable(smoke_state
+    tests/state_smoke.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(smoke_state
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )
