@@ -6,12 +6,19 @@ project(PersonOS VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Sql)
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql Network)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
 # ================= 核心库（领域模型 + 仓库 + 子系统服务）=================
 qt_add_library(personos_core STATIC
+    src/ai/AiConfig.cpp
+    src/ai/AiConfig.h
+    src/ai/AiEngine.cpp
+    src/ai/AiEngine.h
+    src/ai/OpenAiCompatibleAdapter.cpp
+    src/ai/OpenAiCompatibleAdapter.h
+    src/ai/ProviderAdapter.h
     src/database/DatabaseManager.cpp
     src/database/DatabaseManager.h
     src/database/RepoUtil.h
@@ -60,7 +67,7 @@ qt_add_library(personos_core STATIC
 
 # 头文件统一以 src 为根：如 #include "database/DatabaseManager.h"
 target_include_directories(personos_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(personos_core PUBLIC Qt6::Core Qt6::Sql)
+target_link_libraries(personos_core PUBLIC Qt6::Core Qt6::Sql Qt6::Network)
 
 # ================= 应用（GUI）=================
 qt_add_executable(appPersonOS
@@ -154,6 +161,16 @@ qt_add_executable(smoke_review
 )
 
 target_link_libraries(smoke_review
+    PRIVATE Qt6::Core
+    PRIVATE personos_core
+)
+
+qt_add_executable(smoke_ai
+    tests/ai_smoke.cpp
+    tests/TestLogging.h
+)
+
+target_link_libraries(smoke_ai
     PRIVATE Qt6::Core
     PRIVATE personos_core
 )
