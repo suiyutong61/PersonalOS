@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 #include <QString>
 
@@ -14,6 +15,7 @@ class ReviewRepository
 {
 public:
     std::optional<Review> getDaily(const QString &date) const; // YYYY-MM-DD
+    std::vector<Review> getBefore(const QString &date) const; // period_start < date，ORDER BY period_start
     bool upsert(const Review &r);   // 存在则更新，不存在则插入
 
     QString lastError() const { return m_lastError; }

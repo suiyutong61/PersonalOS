@@ -40,6 +40,16 @@ void ApplicationService::init()
     refreshGoalsInternal();
     refreshPending();
     loadTodayState();
+
+    // v1.0 Step 1：个人模型默认先验（Q1 人群先验起步）+ 当日量化指标（design.md 1.10.2）。
+    // 失败不阻断启动（指标计算不影响 v0.1 闭环），错误仅进日志。
+    QString error;
+    m_personalModel.ensureDefaults(&error);
+    m_metrics.computeDaily(m_todayDate, &error);
+
+    // v1.0 Step 2/3：上下界检查（FR-E-02/03）。同样不阻断启动。
+    runWorkloadCheck();
+    runStallCheck();
 }
 
 // ---------------------------------------------------------------- 今日任务
@@ -376,6 +386,83 @@ bool ApplicationService::rejectProposal()
     }
     setError(QStringLiteral("没有待决定的提案"));
     return false;
+}
+
+// ---------------------------------------------------------------- v1.0 上界预警
+
+void ApplicationService::runWorkloadCheck()
+{
+    QString error;
+    const auto warning = m_guardrail.checkWorkload(m_todayDate, &error);
+    if (!warning) {
+        // 未超载或无法计算（如参数缺失）：清空展示；error 只进日志不弹给用户
+        if (m_workloadWarningText.isEmpty() && m_activeWorkloadWarningId == 0)
+            return;
+        m_workloadWarningText.clear();
+        m_activeWorkloadWarningId = 0;
+        emit workloadWarningChanged();
+        return;
+    }
+    m_activeWorkloadWarningId = warning->id;
+    m_workloadWarningText =
+        QStringLiteral("计划可能超载：%1\n阈值：%2\n建议：%3")
+            .arg(warning->dataSnapshot, warning->threshold, warning->suggestion);
+    emit workloadWarningChanged();
+}
+
+bool ApplicationService::dismissWorkloadWarning(const QString &reason)
+{
+    if (m_activeWorkloadWarningId == 0) {
+        setError(QStringLiteral("没有待处理的上界预警"));
+        return false;
+    }
+    QString error;
+    if (!m_guardrail.dismiss(m_activeWorkloadWarningId, reason, &error)) {
+        setError(error);
+        return false;
+    }
+    m_workloadWarningText.clear();
+    m_activeWorkloadWarningId = 0;
+    setError({});
+    emit workloadWarningChanged();
+    return true;
+}
+
+void ApplicationService::runStallCheck()
+{
+    QString error;
+    const auto warning = m_guardrail.checkStall(m_todayDate, &error);
+    if (!warning) {
+        if (m_stallWarningText.isEmpty() && m_activeStallWarningId == 0)
+            return;
+        m_stallWarningText.clear();
+        m_activeStallWarningId = 0;
+        emit stallWarningChanged();
+        return;
+    }
+    m_activeStallWarningId = warning->id;
+    m_stallWarningText =
+        QStringLiteral("执行停滞预警：%1\n阈值：%2\n%3")
+            .arg(warning->dataSnapshot, warning->threshold, warning->suggestion);
+    emit stallWarningChanged();
+}
+
+bool ApplicationService::dismissStallWarning(const QString &reason)
+{
+    if (m_activeStallWarningId == 0) {
+        setError(QStringLiteral("没有待处理的下界预警"));
+        return false;
+    }
+    QString error;
+    if (!m_guardrail.dismiss(m_activeStallWarningId, reason, &error)) {
+        setError(error);
+        return false;
+    }
+    m_stallWarningText.clear();
+    m_activeStallWarningId = 0;
+    setError({});
+    emit stallWarningChanged();
+    return true;
 }
 
 // ---------------------------------------------------------------- 通用

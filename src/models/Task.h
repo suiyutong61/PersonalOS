@@ -25,6 +25,11 @@ struct Task
     QString createdAt;
     QString updatedAt;
     QString completedAt;
+    // ---- v1.0（design.md 1.8.2）----
+    QString triggerWhen;                              // if-then 触发条件（FR-C-03）
+    QString triggerWhere;
+    QString triggerHow;
+    QString taskType;                                 // routine / learning（FR-C-04；空 = 未标注）
 
     bool isDone() const
     {

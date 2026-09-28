@@ -94,4 +94,15 @@ bool PlanRepository::setStatus(qint64 id, const QString &status)
     return q.numRowsAffected() > 0;
 }
 
+bool PlanRepository::updateNote(qint64 id, const QString &note)
+{
+    auto q = RepoUtil::query(
+        QStringLiteral("UPDATE plans SET note=? WHERE id=?"), {note, id});
+    if (!q.exec()) {
+        fail(QStringLiteral("updateNote"), q.lastError().text());
+        return false;
+    }
+    return q.numRowsAffected() > 0;
+}
+
 } // namespace PersonOS

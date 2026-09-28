@@ -7,11 +7,10 @@
 #include <QStandardPaths>
 #include <QVariant>
 
-#include "database/Migrations.h"
+#include "infrastructure/persistence/MigrationRunner.h"
 
 namespace {
 const QString kConnectionName = QStringLiteral("personos_main");
-const QString kSchemaVersionKey = QStringLiteral("schema_version");
 } // namespace
 
 DatabaseManager &DatabaseManager::instance()
@@ -31,6 +30,19 @@ QString DatabaseManager::databasePath() const
     // （注意：AppDataLocation 默认指向 Roaming，本地大文件数据库用 Local 更合适）
     return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
            + QStringLiteral("/personos.db");
+}
+
+void DatabaseManager::closeConnection()
+{
+    // 恢复切换前调用：移除具名连接；之后可再次 open()。
+    // 调用方保证此刻没有存活的 QSqlDatabase 副本（恢复流程在受控点执行）。
+    if (QSqlDatabase::contains(kConnectionName)) {
+        {
+            QSqlDatabase db = QSqlDatabase::database(kConnectionName);
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(kConnectionName);
+    }
 }
 
 bool DatabaseManager::open()
@@ -74,13 +86,7 @@ int DatabaseManager::schemaVersion() const
     if (!QSqlDatabase::contains(kConnectionName))
         return 0;
 
-    // app_meta 表由 v1 迁移创建；未迁移时不存在，返回 0
-    QSqlQuery q(database());
-    if (!q.exec(QStringLiteral("SELECT value FROM app_meta WHERE key='%1'").arg(kSchemaVersionKey)))
-        return 0;
-    if (!q.next())
-        return 0;
-    return q.value(0).toInt();
+    return PersonOS::Infrastructure::MigrationRunner::currentVersion(database());
 }
 
 QString DatabaseManager::lastError() const
@@ -90,54 +96,9 @@ QString DatabaseManager::lastError() const
 
 bool DatabaseManager::applyMigrations()
 {
-    // 依次执行 version 大于当前 schema_version 的迁移；
-    // 每个 Step 一个事务，成功后更新 schema_version（Migrations.h 规则 2/3）。
-    const int current = schemaVersion();
-
-    for (const auto &step : Migrations::kSteps) {
-        if (step.version <= current)
-            continue;
-
-        QSqlDatabase db = database();
-        if (!db.transaction()) {
-            m_lastError = QStringLiteral("迁移 v%1 无法开启事务: %2")
-                              .arg(step.version)
-                              .arg(db.lastError().text());
-            return false;
-        }
-
-        bool ok = true;
-        for (const char *sql : step.statements) {
-            QSqlQuery q(db);
-            if (!q.exec(QString::fromUtf8(sql))) {
-                m_lastError = QStringLiteral("迁移 v%1 失败: %2")
-                                  .arg(step.version)
-                                  .arg(q.lastError().text());
-                ok = false;
-                break;
-            }
-        }
-
-        if (ok) {
-            QSqlQuery q(db);
-            ok = q.exec(QStringLiteral(
-                            "INSERT INTO app_meta(key, value) VALUES('%1', '%2') "
-                            "ON CONFLICT(key) DO UPDATE SET value='%2'")
-                            .arg(kSchemaVersionKey)
-                            .arg(step.version));
-            if (!ok)
-                m_lastError = QStringLiteral("迁移 v%1 写入版本号失败: %2")
-                                  .arg(step.version)
-                                  .arg(q.lastError().text());
-        }
-
-        if (ok)
-            db.commit();
-        else
-            db.rollback();
-
-        if (!ok)
-            return false;
-    }
-    return true;
+    const auto result = PersonOS::Infrastructure::MigrationRunner().migrate(database());
+    if (result)
+        return true;
+    m_lastError = QString::fromStdString(result.error().message + ": " + result.error().detail);
+    return false;
 }

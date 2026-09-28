@@ -21,6 +21,10 @@ struct Proposal
     QString status = QStringLiteral("draft");         // draft/review/approved/rejected/applied
     QString createdAt;
     QString decidedAt;
+    // ---- v1.0（design.md 1.8.2，FR-H-02/03）----
+    QString basisTypes;                               // 六类依据标注：personal_data/system_rule/
+                                                      // computational/research_evidence/ai_inference/
+                                                      // user_decision（逗号分隔）
 };
 
 } // namespace PersonOS

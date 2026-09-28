@@ -50,6 +50,24 @@ std::optional<Review> ReviewRepository::getDaily(const QString &date) const
     return reviewFromQuery(q);
 }
 
+std::vector<Review> ReviewRepository::getBefore(const QString &date) const
+{
+    std::vector<Review> out;
+    auto q = RepoUtil::query(
+        QStringLiteral(
+            "SELECT %1 FROM reviews WHERE review_type='daily' AND period_start < ? "
+            "ORDER BY period_start")
+            .arg(kColumns),
+        {date});
+    if (!q.exec()) {
+        fail(QStringLiteral("getBefore"), q.lastError().text());
+        return out;
+    }
+    while (q.next())
+        out.push_back(reviewFromQuery(q));
+    return out;
+}
+
 bool ReviewRepository::upsert(const Review &r)
 {
     auto q = RepoUtil::query(

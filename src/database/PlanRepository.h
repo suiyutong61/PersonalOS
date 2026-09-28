@@ -17,6 +17,7 @@ public:
     std::optional<Plan> getDaily(const QString &date) const; // YYYY-MM-DD
     qint64 ensureDaily(const QString &date);   // 不存在则创建，返回 id；失败返回 0
     bool setStatus(qint64 id, const QString &status); // active/closed
+    bool updateNote(qint64 id, const QString &note);  // v1.0：计划依据记录（FR-C-05）
 
     QString lastError() const { return m_lastError; }
 

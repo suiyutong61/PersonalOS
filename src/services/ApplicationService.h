@@ -9,11 +9,14 @@
 #include "ai/AiEngine.h"
 #include "evolution/EvolutionService.h"
 #include "execution/ExecutionService.h"
+#include "execution/MetricsService.h"
 #include "feedback/FeedbackService.h"
+#include "feedback/GuardrailService.h"
 #include "goals/CoreAndGoalService.h"
 #include "models/Proposal.h"
 #include "planning/PlanningService.h"
 #include "review/ReviewService.h"
+#include "state/PersonalModelService.h"
 #include "state/StateService.h"
 
 namespace PersonOS {
@@ -45,6 +48,10 @@ class ApplicationService : public QObject
     // ---- 提案 ----
     Q_PROPERTY(QString proposalText READ proposalText NOTIFY proposalChanged)
     Q_PROPERTY(bool hasPendingProposal READ hasPendingProposal NOTIFY proposalChanged)
+    // ---- v1.0 上界预警 ----
+    Q_PROPERTY(QString workloadWarningText READ workloadWarningText NOTIFY workloadWarningChanged)
+    // ---- v1.0 下界预警 ----
+    Q_PROPERTY(QString stallWarningText READ stallWarningText NOTIFY stallWarningChanged)
     // ---- 通用 ----
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
 
@@ -82,6 +89,13 @@ public:
     Q_INVOKABLE bool approveProposal();                // 批准 + 生效（EvolutionService）
     Q_INVOKABLE bool rejectProposal();
 
+    // ---- v1.0 上界预警（FR-E-02；UI 展示在 Step 8）----
+    Q_INVOKABLE void runWorkloadCheck();
+    Q_INVOKABLE bool dismissWorkloadWarning(const QString &reason);
+    // ---- v1.0 下界预警（FR-E-03/05；UI 展示在 Step 8）----
+    Q_INVOKABLE void runStallCheck();
+    Q_INVOKABLE bool dismissStallWarning(const QString &reason);
+
     // ---- 属性访问器 ----
     QList<QObject *> todayTasks() const { return m_todayItems; }
     QString todayDate() const { return m_todayDate; }
@@ -99,6 +113,8 @@ public:
     QStringList pendingReviewDates() const { return m_pendingDates; }
     QString proposalText() const { return m_proposalText; }
     bool hasPendingProposal() const { return m_currentProposal.id > 0; }
+    QString workloadWarningText() const { return m_workloadWarningText; }
+    QString stallWarningText() const { return m_stallWarningText; }
     QString lastError() const { return m_lastError; }
 
     void setReviewSummary(const QString &v) { m_reviewSummary = v; }
@@ -113,6 +129,8 @@ signals:
     void reviewChanged();
     void pendingChanged();
     void proposalChanged();
+    void workloadWarningChanged();
+    void stallWarningChanged();
     void lastErrorChanged();
     void aiReviewReady(bool ok, const QString &error);
 
@@ -126,6 +144,9 @@ private:
     ExecutionService m_execution;
     CoreAndGoalService m_goalsSvc;
     StateService m_states;
+    PersonalModelService m_personalModel;   // v1.0：个人模型参数（design.md 1.1）
+    MetricsService m_metrics;               // v1.0：量化指标（design.md 1.10.2）
+    GuardrailService m_guardrail;           // v1.0：上下界预警（design.md 1.4.1；下界 Step 3）
     ReviewService m_reviews;
     EvolutionService m_evolution;
     AiEngine m_ai;
@@ -147,6 +168,10 @@ private:
     QStringList m_pendingDates;
     Proposal m_currentProposal;
     QString m_proposalText;
+    QString m_workloadWarningText;
+    qint64 m_activeWorkloadWarningId = 0;
+    QString m_stallWarningText;
+    qint64 m_activeStallWarningId = 0;
     QString m_lastError;
 };
 

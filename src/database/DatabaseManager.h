@@ -15,6 +15,9 @@ public:
     // 打开（或创建）数据库并完成迁移；失败时通过 lastError() 取原因
     bool open();
 
+    // 关闭当前连接（恢复切换前调用；之后可再次 open()）
+    void closeConnection();
+
     // 每次调用取当前连接（不要缓存 QSqlDatabase 成员，避免连接失效）
     QSqlDatabase database() const;
 

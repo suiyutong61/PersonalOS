@@ -11,7 +11,7 @@ namespace {
 
 const QString kColumns = QStringLiteral(
     "id, target_type, target_id, current_value, proposed_value, reason, evidence, "
-    "expected_effect, risk, status, created_at, decided_at");
+    "expected_effect, risk, status, created_at, decided_at, basis_types");
 
 Proposal proposalFromQuery(const QSqlQuery &q)
 {
@@ -28,6 +28,7 @@ Proposal proposalFromQuery(const QSqlQuery &q)
     p.status = q.value(QStringLiteral("status")).toString();
     p.createdAt = q.value(QStringLiteral("created_at")).toString();
     p.decidedAt = q.value(QStringLiteral("decided_at")).toString();
+    p.basisTypes = q.value(QStringLiteral("basis_types")).toString();
     return p;
 }
 
@@ -43,10 +44,12 @@ qint64 ProposalRepository::create(const Proposal &p)
     auto q = RepoUtil::query(
         QStringLiteral(
             "INSERT INTO proposals(target_type, target_id, current_value, proposed_value, "
-            "reason, evidence, expected_effect, risk, status) VALUES (?,?,?,?,?,?,?,?,?)"),
+            "reason, evidence, expected_effect, risk, status, basis_types) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)"),
         {p.targetType, RepoUtil::nullableId(p.targetId), RepoUtil::nullableText(p.currentValue),
          p.proposedValue, p.reason, RepoUtil::nullableText(p.evidence),
-         RepoUtil::nullableText(p.expectedEffect), RepoUtil::nullableText(p.risk), p.status});
+         RepoUtil::nullableText(p.expectedEffect), RepoUtil::nullableText(p.risk), p.status,
+         RepoUtil::nullableText(p.basisTypes)});
     if (!q.exec()) {
         fail(QStringLiteral("create"), q.lastError().text());
         return 0;

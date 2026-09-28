@@ -92,4 +92,24 @@ bool PlanningService::closeDailyPlan(const QString &date, QString *error)
     return true;
 }
 
+bool PlanningService::setPlanBasis(const QString &date, const QString &basis, QString *error)
+{
+    if (error)
+        error->clear();
+    if (!validateDate(date, error))
+        return false;
+    if (basis.trimmed().isEmpty()) {
+        setError(error, QStringLiteral("计划依据不能为空"));
+        return false;
+    }
+    const Plan plan = ensureDailyPlan(date, error);
+    if (plan.id == 0)
+        return false;
+    if (!m_plans.updateNote(plan.id, basis)) {
+        setError(error, m_plans.lastError());
+        return false;
+    }
+    return true;
+}
+
 } // namespace PersonOS

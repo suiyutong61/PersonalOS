@@ -29,6 +29,10 @@ public:
     // 日终复盘完成后关闭当日计划（status: active → closed）
     bool closeDailyPlan(const QString &date, QString *error = nullptr);
 
+    // v1.0（FR-C-05 计划可解释性）：记录当日计划的依据（"为什么这样安排"），
+    // 写入 plans.note；计划不存在则自动 ensure。
+    bool setPlanBasis(const QString &date, const QString &basis, QString *error = nullptr);
+
     // 注：reschedule（日间动态调整，2.5.5）= 经 ExecutionService::updateTask
     // 修改任务的 due_date/sort_order，MVP 不单独实现。
 

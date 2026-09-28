@@ -12,7 +12,8 @@ namespace {
 
 const QString kColumns = QStringLiteral(
     "id, plan_id, goal_id, title, description, planned_minutes, due_date, status, "
-    "actual_minutes, sort_order, created_at, updated_at, completed_at");
+    "actual_minutes, sort_order, created_at, updated_at, completed_at, "
+    "trigger_when, trigger_where, trigger_how, task_type");
 
 Task taskFromQuery(const QSqlQuery &q)
 {
@@ -34,6 +35,10 @@ Task taskFromQuery(const QSqlQuery &q)
     t.createdAt = q.value(QStringLiteral("created_at")).toString();
     t.updatedAt = q.value(QStringLiteral("updated_at")).toString();
     t.completedAt = q.value(QStringLiteral("completed_at")).toString();
+    t.triggerWhen = q.value(QStringLiteral("trigger_when")).toString();
+    t.triggerWhere = q.value(QStringLiteral("trigger_where")).toString();
+    t.triggerHow = q.value(QStringLiteral("trigger_how")).toString();
+    t.taskType = q.value(QStringLiteral("task_type")).toString();
     return t;
 }
 
@@ -93,10 +98,13 @@ qint64 TaskRepository::create(const Task &t)
     auto q = RepoUtil::query(
         QStringLiteral(
             "INSERT INTO tasks(plan_id, goal_id, title, description, planned_minutes, due_date, "
-            "status, actual_minutes, sort_order) VALUES (?,?,?,?,?,?,?,?,?)"),
+            "status, actual_minutes, sort_order, trigger_when, trigger_where, trigger_how, "
+            "task_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"),
         {RepoUtil::nullableId(t.planId), RepoUtil::nullableId(t.goalId), t.title,
          RepoUtil::nullableText(t.description), RepoUtil::nullableInt(t.plannedMinutes), t.dueDate,
-         t.status, RepoUtil::nullableInt(t.actualMinutes), t.sortOrder});
+         t.status, RepoUtil::nullableInt(t.actualMinutes), t.sortOrder,
+         RepoUtil::nullableText(t.triggerWhen), RepoUtil::nullableText(t.triggerWhere),
+         RepoUtil::nullableText(t.triggerHow), RepoUtil::nullableText(t.taskType)});
     if (!q.exec()) {
         fail(QStringLiteral("create"), q.lastError().text());
         return 0;
@@ -110,11 +118,14 @@ bool TaskRepository::update(const Task &t)
         QStringLiteral(
             "UPDATE tasks SET plan_id=?, goal_id=?, title=?, description=?, planned_minutes=?, "
             "due_date=?, status=?, actual_minutes=?, sort_order=?, completed_at=?, "
+            "trigger_when=?, trigger_where=?, trigger_how=?, task_type=?, "
             "updated_at=datetime('now','localtime') WHERE id=?"),
         {RepoUtil::nullableId(t.planId), RepoUtil::nullableId(t.goalId), t.title,
          RepoUtil::nullableText(t.description), RepoUtil::nullableInt(t.plannedMinutes), t.dueDate,
          t.status, RepoUtil::nullableInt(t.actualMinutes), t.sortOrder,
-         RepoUtil::nullableText(t.completedAt), t.id});
+         RepoUtil::nullableText(t.completedAt), RepoUtil::nullableText(t.triggerWhen),
+         RepoUtil::nullableText(t.triggerWhere), RepoUtil::nullableText(t.triggerHow),
+         RepoUtil::nullableText(t.taskType), t.id});
     if (!q.exec()) {
         fail(QStringLiteral("update"), q.lastError().text());
         return false;
