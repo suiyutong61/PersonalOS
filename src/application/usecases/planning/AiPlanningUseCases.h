@@ -19,6 +19,7 @@
 #include "application/usecases/domain/DomainRegistry.h"   // DomainConfig
 #include "domain/ai/Ai.h"
 #include "domain/foundation/Clock.h"
+#include "domain/knowledge/Retrieval.h"
 
 // AI 端到端规划管线（DR-015/016/017/027；architecture 4.3.3/4.4）
 // 固定顺序：领域配置 → 状态上下文 → 知识检索与快照 → 知识支持判定 →
@@ -38,6 +39,7 @@ public:
         Domain::SourceMode sourceMode = Domain::SourceMode::Ungrounded;
         std::string userText;            // 面向用户的说明（AI 输出）
         std::vector<std::string> warnings;
+        std::string jobUid;              // 底层 AI 任务 uid(物理删除回答时联动)
     };
 
     AiPlanningUseCases(AiGatewayPort &gateway, AiConfigStore &configs,
@@ -50,7 +52,14 @@ public:
 
     // AI 生成路线候选（候选 → 用户确认后才成为当前路线）
     Result<ProposalOutput, ApplicationError> generateRouteProposal(
-        const Domain::Uid &userId, const Domain::Uid &goalUid);
+        const Domain::Uid &userId, const Domain::Uid &goalUid,
+        const std::string &userGuidance = {});
+
+    // AI 生成阶段详情候选（回答"如何真正完成这一阶段"；阶段必须属于已确认
+    // 路线；详情整版候选 → 用户确认；资料建议只能引用检索召回条目）
+    Result<ProposalOutput, ApplicationError> generateStageDetail(
+        const Domain::Uid &userId, const Domain::Uid &stageUid,
+        const std::string &userGuidance = {});
 
     // AI 生成 MEL 候选（周期取自领域清单参数；候选 → 用户确认激活）
     Result<ProposalOutput, ApplicationError> generateMelProposal(
@@ -82,6 +91,7 @@ private:
         std::string snapshotUid;
         Domain::SourceMode sourceMode;
         bool hasMaterialConflict = false;
+        std::vector<Domain::RetrievalHit> hits;   // 检索命中（阶段详情资料候选集）
     };
     Result<CalibrationContext, ApplicationError> calibrate(
         const std::string &purpose, const std::string &queryText,

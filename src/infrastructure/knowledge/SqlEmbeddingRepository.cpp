@@ -63,16 +63,57 @@ Application::Result<void, Application::ApplicationError> SqlEmbeddingRepository:
             {Application::ErrorCode::Storage, "embedding upsert failed: "
                                                  + query.lastError().text().toStdString(),
              {}, false});
+    // 同 owner+field+model 只保留当前内容指纹一行(版本切换/内容更新后
+    // 旧 hash 行不残留,向量空间内同一对象至多一条)
+    QSqlQuery cleanup(m_database);
+    cleanup.prepare(QStringLiteral(
+        "DELETE FROM embedding_records_v6 WHERE owner_type=? AND owner_uid=? "
+        "AND field_code=? AND model_id=? AND content_hash<>?"));
+    cleanup.addBindValue(QString::fromStdString(row.ownerType));
+    cleanup.addBindValue(QString::fromStdString(row.ownerUid));
+    cleanup.addBindValue(QString::fromStdString(row.fieldCode));
+    cleanup.addBindValue(QString::fromStdString(row.modelId));
+    cleanup.addBindValue(QString::fromStdString(contentHash));
+    if (!cleanup.exec())
+        return Application::Result<void, Application::ApplicationError>::failure(
+            {Application::ErrorCode::Storage, "embedding stale row cleanup failed: "
+                                                 + cleanup.lastError().text().toStdString(),
+             {}, false});
     return Application::Result<void, Application::ApplicationError>::success();
+}
+
+std::vector<EmbeddingRow> SqlEmbeddingRepository::allForModel(const std::string &modelId)
+{
+    return load(QStringLiteral("WHERE model_id=?"),
+                {QString::fromStdString(modelId)});
+}
+
+std::vector<EmbeddingRow> SqlEmbeddingRepository::allForOwnerType(const std::string &ownerType,
+                                                                  const std::string &modelId)
+{
+    return load(QStringLiteral("WHERE owner_type=? AND model_id=?"),
+                {QString::fromStdString(ownerType), QString::fromStdString(modelId)});
 }
 
 std::vector<EmbeddingRow> SqlEmbeddingRepository::all()
 {
+    return load(QString(), {});
+}
+
+std::vector<EmbeddingRow> SqlEmbeddingRepository::load(const QString &where,
+                                                       const QList<QVariant> &binds)
+{
     std::vector<EmbeddingRow> out;
     QSqlQuery query(m_database);
-    if (!query.exec(QStringLiteral(
-            "SELECT owner_type, owner_uid, field_code, model_id, dimension, vector_blob "
-            "FROM embedding_records_v6")))
+    QString sql = QStringLiteral(
+        "SELECT owner_type, owner_uid, field_code, model_id, dimension, vector_blob, "
+        "content_hash "
+        "FROM embedding_records_v6 ");
+    sql += where;
+    query.prepare(sql);
+    for (const QVariant &value : binds)
+        query.addBindValue(value);
+    if (!query.exec())
         return out;
     while (query.next()) {
         EmbeddingRow row;
@@ -82,6 +123,7 @@ std::vector<EmbeddingRow> SqlEmbeddingRepository::all()
         row.modelId = query.value(3).toString().toStdString();
         row.dimension = query.value(4).toInt();
         row.vector = fromBlob(query.value(5).toByteArray());
+        row.contentHash = query.value(6).toString().toStdString();
         if (!row.vector.empty())
             out.push_back(std::move(row));
     }
@@ -100,6 +142,18 @@ SqlEmbeddingRepository::removeForOwner(const std::string &ownerType,
     if (!query.exec())
         return Application::Result<void, Application::ApplicationError>::failure(
             {Application::ErrorCode::Storage, "embedding remove failed", {}, false});
+    return Application::Result<void, Application::ApplicationError>::success();
+}
+
+Application::Result<void, Application::ApplicationError>
+SqlEmbeddingRepository::removeForModel(const std::string &modelId)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM embedding_records_v6 WHERE model_id=?"));
+    query.addBindValue(QString::fromStdString(modelId));
+    if (!query.exec())
+        return Application::Result<void, Application::ApplicationError>::failure(
+            {Application::ErrorCode::Storage, "embedding remove for model failed", {}, false});
     return Application::Result<void, Application::ApplicationError>::success();
 }
 

@@ -30,13 +30,20 @@ public:
     virtual SaveResult insertRule(const Domain::ReminderRule &rule) = 0;
     virtual SaveResult updateRule(const Domain::ReminderRule &rule, int expectedRevision) = 0;
     virtual std::vector<Domain::ReminderRule> enabledRules() = 0;
+    // 某 owner 的全部规则（含已停用：停用是用户决定，不得再自动重建默认规则）
+    virtual std::vector<Domain::ReminderRule> rulesForOwner(const std::string &ownerType,
+                                                            const std::string &ownerUid) = 0;
 
     virtual SaveResult insertDelivery(const Domain::ReminderDelivery &delivery) = 0;
     virtual bool existsDeliveryKey(const std::string &idempotencyKey) = 0;
+    // 待投递：pending 已到期 + failed 未达重试上限（attempt_count < 3）
     virtual std::vector<Domain::ReminderDelivery> pendingDeliveries(
-        const std::string &nowIso) = 0;
+        const std::string &nowIso, int maxAttempts = 3) = 0;
+    // 每次调用视为一次投递尝试：attempt_count+1；delivered 时写 delivered_at
     virtual SaveResult markDelivery(const Domain::Uid &uid, const std::string &status,
                                     const std::optional<std::string> &error) = 0;
+    // 最近投递记录（日历页"投递历史"只读投影，最新在前）
+    virtual std::vector<Domain::ReminderDelivery> recentDeliveries(int limit) = 0;
 };
 
 class AchievementRepositoryPort

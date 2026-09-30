@@ -39,6 +39,9 @@ public:
 
     // 一致性检查：索引条目数 vs 正式版本数
     virtual bool isConsistent() = 0;
+
+    // 移除某知识条目的全部索引行（候选条目物理删除时同步）
+    virtual SaveResult removeOwner(const std::string &ownerUid) = 0;
 };
 
 } // namespace PersonOS::Application

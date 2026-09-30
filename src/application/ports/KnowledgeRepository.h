@@ -36,6 +36,9 @@ public:
 
     // 来源与证据
     virtual SaveResult insertSource(const Domain::SourceRecord &source) = 0;
+    // 按内容指纹查找来源（论文全文只存受管原件，分析时经 content_hash 定位来源）
+    virtual std::optional<Domain::SourceRecord> findSourceByContentHash(
+        const std::string &contentHash) = 0;
     virtual SaveResult insertFragment(const Domain::EvidenceFragment &fragment) = 0;
     virtual SaveResult insertEvidenceLink(const Domain::EvidenceLink &link) = 0;
 
@@ -50,6 +53,22 @@ public:
     virtual SaveResult insertTipDetail(const Domain::TipDetail &detail) = 0;
     virtual SaveResult insertPlanDetail(const Domain::PlanDetail &detail) = 0;
     virtual SaveResult insertMethodStep(const Domain::MethodStep &step) = 0;
+
+    // 详情读取(知识库详情视图)
+    virtual std::optional<Domain::MethodDetail> methodDetailOf(const Domain::Uid &itemUid) = 0;
+    virtual std::vector<Domain::MethodStep> methodStepsOf(const Domain::Uid &versionUid) = 0;
+    virtual std::vector<Domain::EvidenceFragment> evidenceFragmentsOf(
+        const Domain::Uid &versionUid) = 0;
+
+    // 级联物理删除(仅限 AI 生成候选;调用方负责资格校验)。
+    // 同一事务:类型详情→关系→版本(级联步骤/适用性)→条目(级联分类/标签)。
+    virtual SaveResult deleteItemCascade(const Domain::Uid &uid) = 0;
+
+    // 编号辅助(基于 Research Base 01-43):某领域内论文数(用户导入自动编号),
+    // 某论文派生出的某类型候选数(衍生方法/贴士编号)
+    virtual int countPapersInDomain(const std::string &domainCode) = 0;
+    virtual int derivedCandidateCount(const Domain::Uid &paperItemUid,
+                                      Domain::LibraryType type) = 0;
 };
 
 } // namespace PersonOS::Application

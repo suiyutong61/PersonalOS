@@ -15,7 +15,7 @@ struct Step {
     std::initializer_list<const char *> statements;
 };
 
-inline constexpr int kLatestVersion = 8;
+inline constexpr int kLatestVersion = 12;
 
 // v1 = MVP 最小闭环 + 变更机制（goals/state_snapshots/plans/tasks/events/
 //      reviews/proposals/change_logs/versions + core_values/principles/app_meta）
@@ -1123,6 +1123,63 @@ CREATE TABLE ai_connection_tests_v7 (
          R"SQL(ALTER TABLE ai_provider_configs_v6 ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0)SQL",
          R"SQL(CREATE UNIQUE INDEX idx_ai_provider_configs_v6_default
               ON ai_provider_configs_v6(is_default) WHERE is_default=1)SQL",
+     }},
+    {9,
+     {
+         R"SQL(ALTER TABLE knowledge_items_v5 ADD COLUMN reference_code TEXT NOT NULL DEFAULT '')SQL",
+     }},
+    {10,
+     {
+         // 咨询回答与其底层 AI 任务的关联(2026-09-29 用户决策:咨询回答
+         // 允许物理删除——连同任务/调用记录一起;历史审计事件保留)。
+         // 无外键:任务可能被删除,仅作定位引用。
+         R"SQL(ALTER TABLE decision_records_v6 ADD COLUMN job_uid TEXT)SQL",
+     }},
+    {11,
+     {
+         // 路线阶段详情(2026-09-30):回答"如何真正完成这一阶段"。
+         // 详情按版本追加(AI 候选 → 用户确认);资料绑定在阶段上、用户逐条
+         // 接受/拒绝;资料不建到知识表的外键——AI 候选条目可物理删除,级联会
+         // 吞掉用户决定,读取侧 LEFT JOIN 容错显示"资料已归档"。
+         R"SQL(
+CREATE TABLE route_stage_details_v11 (
+    id INTEGER PRIMARY KEY, uid TEXT NOT NULL UNIQUE,
+    stage_id INTEGER NOT NULL REFERENCES route_stages_v3(id) ON DELETE CASCADE,
+    version_no INTEGER NOT NULL CHECK(version_no>0),
+    outcomes_json TEXT NOT NULL CHECK(json_valid(outcomes_json)),
+    tasks_json TEXT NOT NULL CHECK(json_valid(tasks_json)),
+    projects_json TEXT NOT NULL CHECK(json_valid(projects_json)),
+    criteria_json TEXT NOT NULL CHECK(json_valid(criteria_json)),
+    rationale TEXT NOT NULL,
+    created_by TEXT NOT NULL CHECK(created_by IN ('ai','user','system')),
+    created_at TEXT NOT NULL,
+    user_confirmed_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+    UNIQUE(stage_id,version_no)
+) STRICT
+)SQL",
+         R"SQL(
+CREATE TABLE route_stage_materials_v11 (
+    id INTEGER PRIMARY KEY,
+    stage_id INTEGER NOT NULL REFERENCES route_stages_v3(id) ON DELETE CASCADE,
+    knowledge_item_uid TEXT NOT NULL,
+    knowledge_version_uid TEXT NOT NULL,
+    rank INTEGER NOT NULL CHECK(rank>=0),
+    reason TEXT NOT NULL,
+    user_choice TEXT NOT NULL CHECK(user_choice IN ('pending','accepted','rejected')),
+    created_by TEXT NOT NULL CHECK(created_by IN ('ai','user','system')),
+    updated_at TEXT NOT NULL,
+    UNIQUE(stage_id,knowledge_item_uid)
+) STRICT
+)SQL",
+         R"SQL(CREATE INDEX idx_route_stage_details_v11_stage ON route_stage_details_v11(stage_id,version_no DESC))SQL",
+         R"SQL(CREATE INDEX idx_route_stage_materials_v11_stage ON route_stage_materials_v11(stage_id,rank))SQL",
+     }},
+    {12,
+     {
+         // 提醒投递失败重试计数(2026-09-30):failed 行可重选重试,attempt_count
+         // 达到上限后终态失败不再重选(投递通道接线配套,只追加)。
+         R"SQL(ALTER TABLE reminder_deliveries_v6 ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0)SQL",
      }},
 };
 

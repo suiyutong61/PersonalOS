@@ -41,6 +41,7 @@ HttpEmbeddingPort::embed(const std::string &text)
         return Application::Result<std::vector<float>, Application::ApplicationError>::failure(
             vector.error());
     m_dimension = static_cast<int>(vector.value().size());
+    m_modelId = config->providerCode + ":" + config->model;
     return vector;
 }
 

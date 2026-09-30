@@ -24,11 +24,15 @@ public:
     Application::SaveResult updateRule(const Domain::ReminderRule &rule,
                                        int expectedRevision) override;
     std::vector<Domain::ReminderRule> enabledRules() override;
+    std::vector<Domain::ReminderRule> rulesForOwner(const std::string &ownerType,
+                                                    const std::string &ownerUid) override;
     Application::SaveResult insertDelivery(const Domain::ReminderDelivery &delivery) override;
     bool existsDeliveryKey(const std::string &idempotencyKey) override;
-    std::vector<Domain::ReminderDelivery> pendingDeliveries(const std::string &nowIso) override;
+    std::vector<Domain::ReminderDelivery> pendingDeliveries(const std::string &nowIso,
+                                                            int maxAttempts = 3) override;
     Application::SaveResult markDelivery(const Domain::Uid &uid, const std::string &status,
                                          const std::optional<std::string> &error) override;
+    std::vector<Domain::ReminderDelivery> recentDeliveries(int limit) override;
 
     // 成就
     Application::SaveResult insert(const Domain::Achievement &achievement) override;

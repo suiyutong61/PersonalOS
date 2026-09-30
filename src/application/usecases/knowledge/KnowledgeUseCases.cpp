@@ -1,5 +1,7 @@
 #include "application/usecases/knowledge/KnowledgeUseCases.h"
 
+#include <QtGlobal>
+
 #include "application/audit/Audit.h"
 
 namespace PersonOS::Application {
@@ -43,9 +45,44 @@ std::string joinSteps(const std::vector<Domain::MethodStep> &steps)
 } // namespace
 
 KnowledgeUseCases::KnowledgeUseCases(KnowledgeRepository &repo, SearchIndexPort &searchIndex,
-                                     UuidPort &uids, const Domain::Clock &clock)
-    : m_repo(repo), m_searchIndex(searchIndex), m_uids(uids), m_clock(clock)
+                                     UuidPort &uids, const Domain::Clock &clock,
+                                     EmbeddingPort *embeddings, EmbeddingVectorStore *vectorStore)
+    : m_repo(repo), m_searchIndex(searchIndex), m_uids(uids), m_clock(clock),
+      m_embeddings(embeddings), m_vectorStore(vectorStore)
 {}
+
+std::optional<std::vector<float>> KnowledgeUseCases::embedForIndex(
+    const std::string &title, const std::string &summary) const
+{
+    if (!m_embeddings || !m_vectorStore || m_embeddings->modelId().empty())
+        return std::nullopt;
+    // 索引文本：标题 + 摘要（e5 passage 前缀；模型侧 512 token 截断兜底）
+    const auto embedded = m_embeddings->embedDocument(title + "\n" + summary);
+    if (!embedded) {
+        qWarning("knowledge vector embed skipped: %s",
+                 embedded.error().message.c_str());
+        return std::nullopt;
+    }
+    return embedded.value();
+}
+
+void KnowledgeUseCases::tryUpsertVector(
+    const std::string &ownerType, const std::string &ownerUid, const std::string &contentHash,
+    const std::optional<std::vector<float>> &vector) const
+{
+    if (!vector || !m_embeddings || !m_vectorStore)
+        return;
+    Application::EmbeddingRecord record;
+    record.ownerType = ownerType;
+    record.ownerUid = ownerUid;
+    record.fieldCode = "main";
+    record.modelId = m_embeddings->modelId();
+    record.dimension = static_cast<int>(vector->size());
+    record.vector = *vector;
+    const auto saved = m_vectorStore->upsert(record, contentHash);
+    if (!saved.hasValue())
+        qWarning("knowledge vector upsert skipped: %s", saved.error().message.c_str());
+}
 
 Result<KnowledgeUseCases::ImportOutput, ApplicationError> KnowledgeUseCases::importKnowledge(
     const ImportInput &input)
@@ -57,6 +94,9 @@ Result<KnowledgeUseCases::ImportOutput, ApplicationError> KnowledgeUseCases::imp
         return Result<ImportOutput, ApplicationError>::failure(
             {ErrorCode::Validation, "source required for non-generated import", {}, false});
 
+    // 索引向量在事务外推理（模型懒加载首帧 1-2 秒，不得持写锁）；失败静默跳过
+    const auto indexVector = embedForIndex(input.title, input.summary);
+
     ImportTransaction transaction(m_repo);
     if (const auto error = transaction.begin())
         return Result<ImportOutput, ApplicationError>::failure(*error);
@@ -67,6 +107,7 @@ Result<KnowledgeUseCases::ImportOutput, ApplicationError> KnowledgeUseCases::imp
     item.libraryType = input.libraryType;
     item.title = input.title;
     item.domainCode = input.domainCode;
+    item.referenceCode = input.referenceCode;
     item.status = input.initialStatus;
     item.ownerScope = input.createdBy == "system" || input.createdBy == "developer"
                           ? std::string("system")
@@ -134,6 +175,10 @@ Result<KnowledgeUseCases::ImportOutput, ApplicationError> KnowledgeUseCases::imp
         joinSteps(input.methodSteps));
     if (!indexed.ok)
         return Result<ImportOutput, ApplicationError>::failure(indexed.error);
+
+    // 向量索引同步（与导入同事务原子回滚；不可用/失败不阻断导入，DR-013）
+    tryUpsertVector(Domain::toString(input.libraryType), item.uid.value(), version.contentHash,
+                    indexVector);
 
     // 类型详情（回填条目 UID；方法步骤绑定本版本）
     if (input.paper) {
@@ -216,6 +261,10 @@ Result<Domain::KnowledgeVersion, ApplicationError> KnowledgeUseCases::addVersion
     version.extractionPromptVersion = input.extractionPromptVersion;
     version.validFrom = m_clock.utcIso();
     version.createdBy = input.createdBy;
+    // 新版本的索引向量在事务外推理（失败静默跳过）
+    const auto indexVector = input.isActive
+                                 ? embedForIndex(item->title, input.summary)
+                                 : std::nullopt;
     ImportTransaction transaction(m_repo);
     if (const auto error = transaction.begin())
         return Result<Domain::KnowledgeVersion, ApplicationError>::failure(*error);
@@ -238,6 +287,9 @@ Result<Domain::KnowledgeVersion, ApplicationError> KnowledgeUseCases::addVersion
         if (!indexed.ok)
             return Result<Domain::KnowledgeVersion, ApplicationError>::failure(
                 indexed.error);
+        // 向量索引同步到新版本（与版本切换同事务；upsert 清理旧 hash 行）
+        tryUpsertVector(Domain::toString(item->libraryType), itemUid.value(),
+                        input.contentHash, indexVector);
     }
     if (const auto error = transaction.commit())
         return Result<Domain::KnowledgeVersion, ApplicationError>::failure(*error);
@@ -266,6 +318,29 @@ Result<Domain::KnowledgeItem, ApplicationError> KnowledgeUseCases::deprecate(
     updated.revision = expectedRevision + 1;
     Audit::record({"user", {}, "knowledge.deprecated", "knowledge", updated.uid.value(), "{}"});
     return Result<Domain::KnowledgeItem, ApplicationError>::success(std::move(updated));
+}
+
+Result<int, ApplicationError> KnowledgeUseCases::purgeItem(const Domain::Uid &itemUid)
+{
+    const auto item = m_repo.findItem(itemUid);
+    if (!item)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::NotFound, "knowledge item not found", {}, false});
+    const auto removed = m_repo.deleteItemCascade(itemUid);
+    if (!removed.ok)
+        return Result<int, ApplicationError>::failure(removed.error);
+    const auto ftsRemoved = m_searchIndex.removeOwner(itemUid.value());
+    if (!ftsRemoved.ok)
+        return Result<int, ApplicationError>::failure(ftsRemoved.error);
+    // 向量行清理（best-effort：检索侧 eligibility 过滤兜底，失败不阻断删除）
+    if (m_vectorStore) {
+        const auto vectorRemoved =
+            m_vectorStore->removeForOwner(Domain::toString(item->libraryType), itemUid.value());
+        if (!vectorRemoved.hasValue())
+            qWarning("knowledge vector remove skipped: %s",
+                     vectorRemoved.error().message.c_str());
+    }
+    return Result<int, ApplicationError>::success(1);
 }
 
 Result<Domain::KnowledgeRelation, ApplicationError> KnowledgeUseCases::relate(

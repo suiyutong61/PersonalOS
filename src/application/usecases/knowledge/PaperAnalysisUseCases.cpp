@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "application/audit/Audit.h"
+
 namespace PersonOS::Application {
 namespace {
 
@@ -110,6 +112,34 @@ PaperAnalysisUseCases::analyze(const AnalyzeInput &input)
         || input.idempotencyKey.empty())
         return Result<AnalyzeOutput, ApplicationError>::failure(
             validation("paper text, analysis hash and idempotency key are required"));
+
+    // 幂等复用:同模型+提示词版本(内容指纹相同)已分析过,直接返回既有结果,
+    // 不再新增版本(知识版本表对 (条目, 内容指纹) 有唯一约束,重复写入会整体回滚)
+    for (const auto &version : m_repository.versionsOf(paper->uid))
+        if (version.createdBy == "ai" && version.contentHash == input.analysisContentHash) {
+            AnalyzeOutput output;
+            output.paperVersion = version;
+            output.reusedExisting = true;
+            output.evidenceFragmentCount =
+                static_cast<int>(m_repository.evidenceFragmentsOf(version.uid).size());
+            for (const auto &relation : m_repository.relationsOf(paper->uid)) {
+                if (relation.relation != "derived_from"
+                    || relation.fromItemUid == paper->uid.value())
+                    continue;
+                const auto fromUid = Domain::Uid::parse(relation.fromItemUid);
+                if (!fromUid)
+                    continue;
+                const auto candidate = m_repository.findItem(*fromUid);
+                if (!candidate || candidate->status != Domain::KnowledgeStatus::Candidate
+                    || candidate->createdBy != "generated")
+                    continue;
+                if (candidate->libraryType == Domain::LibraryType::Method)
+                    output.candidateMethods.push_back(*candidate);
+                else if (candidate->libraryType == Domain::LibraryType::Tip)
+                    output.candidateTips.push_back(*candidate);
+            }
+            return Result<AnalyzeOutput, ApplicationError>::success(std::move(output));
+        }
 
     const auto chunks = splitText(QString::fromStdString(input.extractedText),
                                   input.maxChunkCharacters, input.chunkOverlapCharacters);
@@ -261,6 +291,21 @@ PaperAnalysisUseCases::analyze(const AnalyzeInput &input)
         candidateInput.initialStatus = Domain::KnowledgeStatus::Candidate;
         candidateInput.extractionModel = input.modelVersion;
         candidateInput.extractionPromptVersion = input.promptVersion;
+        // 衍生编号(基于 Research Base):来源论文编号 + 类型字母 + 序号,
+        // 如 7.41-M1 / 7.41-T1;来源论文无编号时不编号
+        if (!paper->referenceCode.empty()) {
+            const int sequence = m_repository.derivedCandidateCount(paper->uid, type) + 1;
+            candidateInput.referenceCode = paper->referenceCode + "-"
+                                           + (type == Domain::LibraryType::Method ? "M" : "T")
+                                           + std::to_string(sequence);
+        }
+        // 候选的适用条件/局限随条目保存(契约 v2 起逐条提供)
+        const QJsonValue applicability = candidate.value(QStringLiteral("applicability"));
+        if (applicability.isArray())
+            candidateInput.applicabilityJson = compact(applicability);
+        const QJsonValue limitations = candidate.value(QStringLiteral("limitations"));
+        if (limitations.isArray())
+            candidateInput.limitationsJson = compact(limitations);
         if (type == Domain::LibraryType::Method) {
             Domain::MethodDetail detail;
             detail.methodType = "ai_candidate";
@@ -296,9 +341,13 @@ PaperAnalysisUseCases::analyze(const AnalyzeInput &input)
         relation.toItemUid = input.paperItemUid.value();
         relation.relation = "derived_from";
         relation.confidence = 1.0;
-        const auto related = m_repository.insertRelation(relation);
-        if (!related.ok)
-            return Result<Domain::KnowledgeItem, ApplicationError>::failure(related.error);
+        // 跨块可能重复提出同标题候选(导入按内容指纹去重返回既有条目),
+        // 关系已存在时跳过插入(唯一约束兜底;真实批次曾因此整体回滚)
+        if (!m_repository.relationExists(relation)) {
+            const auto related = m_repository.insertRelation(relation);
+            if (!related.ok)
+                return Result<Domain::KnowledgeItem, ApplicationError>::failure(related.error);
+        }
         return Result<Domain::KnowledgeItem, ApplicationError>::success(imported.value().item);
     };
 
@@ -316,6 +365,50 @@ PaperAnalysisUseCases::analyze(const AnalyzeInput &input)
     if (!committed)
         return Result<AnalyzeOutput, ApplicationError>::failure(committed.error());
     return Result<AnalyzeOutput, ApplicationError>::success(std::move(output));
+}
+
+Result<PaperAnalysisUseCases::PurgeOutput, ApplicationError>
+PaperAnalysisUseCases::purgeGeneratedCandidates(const PurgeInput &input)
+{
+    if (input.candidateItemUids.empty())
+        return Result<PurgeOutput, ApplicationError>::failure(
+            validation("purge requires at least one candidate"));
+    // 资格校验(与撤销同一套守卫):候选、AI 生成、derived_from 指向该论文
+    for (const auto &candidateUid : input.candidateItemUids) {
+        const auto candidate = m_repository.findItem(candidateUid);
+        if (!candidate || candidate->status != Domain::KnowledgeStatus::Candidate
+            || candidate->createdBy != "generated")
+            return Result<PurgeOutput, ApplicationError>::failure(
+                validation("purge is limited to AI-generated candidates"));
+        Domain::KnowledgeRelation relation;
+        relation.fromItemUid = candidateUid.value();
+        relation.toItemUid = input.paperItemUid.value();
+        relation.relation = "derived_from";
+        relation.confidence = 1.0;
+        if (!m_repository.relationExists(relation))
+            return Result<PurgeOutput, ApplicationError>::failure(
+                validation("purge candidate is not derived from this paper"));
+    }
+    PurgeOutput output;
+    WriteTransaction transaction(m_repository);
+    const auto begun = transaction.begin();
+    if (!begun)
+        return Result<PurgeOutput, ApplicationError>::failure(begun.error());
+    for (const auto &candidateUid : input.candidateItemUids) {
+        const auto purged = m_knowledge.purgeItem(candidateUid);
+        if (!purged)
+            return Result<PurgeOutput, ApplicationError>::failure(purged.error());
+        ++output.purgedCount;
+    }
+    const auto committed = transaction.commit();
+    if (!committed)
+        return Result<PurgeOutput, ApplicationError>::failure(committed.error());
+    // 物理删除审计(2026-09-29 用户决策允许删除;审计事件保留供追溯)
+    for (const auto &candidateUid : input.candidateItemUids)
+        Audit::record({"user", {}, "knowledge.item_purged", "knowledge",
+                       candidateUid.value(),
+                       "{\"paper\":\"" + input.paperItemUid.value() + "\"}"});
+    return Result<PurgeOutput, ApplicationError>::success(std::move(output));
 }
 
 Result<PaperAnalysisUseCases::RetractOutput, ApplicationError>
@@ -351,6 +444,11 @@ PaperAnalysisUseCases::retract(const RetractInput &input)
             return Result<RetractOutput, ApplicationError>::failure(
                 validation("retraction candidate is not derived from this paper"));
     }
+    // 全部候选归档在同一事务:中途失败整体回滚,不留半撤销状态
+    WriteTransaction transaction(m_repository);
+    const auto begun = transaction.begin();
+    if (!begun)
+        return Result<RetractOutput, ApplicationError>::failure(begun.error());
     for (const auto &candidateUid : input.candidateItemUids) {
         const auto candidate = m_repository.findItem(candidateUid);
         const auto archived = m_knowledge.deprecate(candidateUid, candidate->revision,
@@ -359,6 +457,9 @@ PaperAnalysisUseCases::retract(const RetractInput &input)
             return Result<RetractOutput, ApplicationError>::failure(archived.error());
         ++output.archivedCandidateCount;
     }
+    const auto committed = transaction.commit();
+    if (!committed)
+        return Result<RetractOutput, ApplicationError>::failure(committed.error());
     return Result<RetractOutput, ApplicationError>::success(std::move(output));
 }
 

@@ -20,11 +20,13 @@ public:
     Application::Result<std::vector<float>, Application::ApplicationError> embed(
         const std::string &text) override;
     int dimension() const override { return m_dimension; }
+    std::string modelId() const override { return m_modelId; }
 
 private:
     Application::AiConfigStore &m_configs;
     Application::CredentialStorePort &m_credentials;
-    int m_dimension = 0;   // 首次成功调用后缓存
+    int m_dimension = 0;          // 首次成功调用后缓存
+    std::string m_modelId;        // 首次成功调用后缓存(providerCode:model)
 };
 
 } // namespace PersonOS::Infrastructure

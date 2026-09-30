@@ -12,6 +12,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: ThemeTokens.spacingLg
@@ -149,7 +152,9 @@ Item {
         }
 
         AppButton {
-            visible: vm.pageState === "ready"
+            // empty 也可见:数据可能由其他页的业务事件产生(切页自动刷新兜底),
+            // 否则空页上零控件成为死路
+            visible: vm.pageState !== "loading"
             text: qsTr("刷新")
             onClicked: vm.refresh()
         }

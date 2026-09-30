@@ -5,7 +5,7 @@ import PersonOS
 Rectangle {
     id: root
     property string text: ""
-    // info / warning / error / knowledge_limited
+    // info / success / warning / error
     property string tone: "info"
 
     implicitHeight: label.implicitHeight + ThemeTokens.spacingMd
@@ -14,6 +14,7 @@ Rectangle {
         switch (tone) {
         case "warning": return Qt.alpha(ThemeTokens.colorWarning, 0.14)
         case "error": return Qt.alpha(ThemeTokens.colorError, 0.10)
+        case "success": return Qt.alpha(ThemeTokens.colorSuccess, 0.14)
         default: return Qt.alpha(ThemeTokens.colorAccent, 0.10)
         }
     }
@@ -22,6 +23,7 @@ Rectangle {
         switch (tone) {
         case "warning": return Qt.alpha(ThemeTokens.colorWarning, 0.5)
         case "error": return Qt.alpha(ThemeTokens.colorError, 0.45)
+        case "success": return Qt.alpha(ThemeTokens.colorSuccess, 0.5)
         default: return Qt.alpha(ThemeTokens.colorAccent, 0.45)
         }
     }
@@ -38,6 +40,7 @@ Rectangle {
             switch (root.tone) {
             case "warning": return ThemeTokens.colorWarningText
             case "error": return ThemeTokens.colorError
+            case "success": return ThemeTokens.colorSuccessText
             default: return ThemeTokens.textPrimary
             }
         }

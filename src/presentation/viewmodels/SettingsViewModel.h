@@ -15,6 +15,7 @@ class SettingsViewModel : public QObject
     Q_OBJECT
     Q_PROPERTY(QString pageState READ pageState NOTIFY pageStateChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
+    Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
     Q_PROPERTY(ListItemModel *connectionsModel READ connectionsModel CONSTANT)
     Q_PROPERTY(ListItemModel *backupsModel READ backupsModel CONSTANT)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY themeChanged)
@@ -38,10 +39,22 @@ public:
     Q_INVOKABLE void startEdit(const QString &uid);
     Q_INVOKABLE void cancelEdit();
     Q_INVOKABLE void setDefaultConnection(const QString &uid);
+    // 文献处理工具路径(QSettings 持久化;留空则自动探测)
+    Q_INVOKABLE void saveToolPaths(const QString &pdftotext, const QString &tesseract);
+    Q_INVOKABLE QString currentPdfToTextPath();
+    Q_INVOKABLE QString currentTesseractPath();
     Q_INVOKABLE void createBackup(const QString &targetPath);
+    // 备份校验(SHA-256 对比;结果经 notice 展示)
+    Q_INVOKABLE void verifyBackup(const QString &uid);
+    // 备份恢复(整体切换:关闭连接→恢复前快照→换入→重开迁移→失败回退;
+    // 成功后在 UI 线程执行启动引导+缓存失效并补记状态)
+    Q_INVOKABLE void restoreBackup(const QString &uid);
+    // 重建本地向量索引（后台：清空当前模型向量 → 全量回填 → 立即重种领域行）
+    Q_INVOKABLE void rebuildVectorIndex();
 
     QString pageState() const { return m_pageState; }
     QString lastError() const { return m_lastError; }
+    QString notice() const { return m_notice; }
     ListItemModel *connectionsModel() { return &m_connectionsModel; }
     ListItemModel *backupsModel() { return &m_backupsModel; }
 
@@ -58,6 +71,7 @@ public:
 signals:
     void pageStateChanged();
     void lastErrorChanged();
+    void noticeChanged();
     void themeChanged();
     void dataChanged();
     void editingChanged();
@@ -65,9 +79,11 @@ signals:
 private:
     void setState(const QString &state);
     void setError(const QString &message);
+    void setNotice(const QString &message);
 
     QString m_pageState = QStringLiteral("idle");
     QString m_lastError;
+    QString m_notice;
     bool m_darkMode = false;
     bool m_reducedMotion = false;
     QString m_editingUid;

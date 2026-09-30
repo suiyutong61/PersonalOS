@@ -62,8 +62,10 @@ void HistoryAchievementViewModel::refresh()
             QString::fromStdString(achievement.uid.value()),
             QString::fromStdString(achievement.title),
             QString::fromStdString(achievement.description),
-            QString::fromStdString(achievement.earnedAt), QStringLiteral("success"),
-            QString::fromStdString(achievement.achievementType)));
+            Presentation::displayDateTime(QString::fromStdString(achievement.earnedAt)),
+            QStringLiteral("success"),
+            Presentation::achievementTypeLabel(
+                QString::fromStdString(achievement.achievementType))));
     }
 
     // 复盘时间线（最近的复盘，含下一动作）
@@ -72,10 +74,12 @@ void HistoryAchievementViewModel::refresh()
         const QString status = QString::fromStdString(Domain::toString(review.status));
         timelineRows.append(row(
             QString::fromStdString(review.uid.value()),
-            QStringLiteral("复盘 %1").arg(QString::fromStdString(review.startedAt)),
+            QStringLiteral("复盘 %1").arg(Presentation::displayDateTime(
+                QString::fromStdString(review.startedAt))),
             QString::fromStdString(review.summary),
-            status, status == QStringLiteral("closed") ? QStringLiteral("success")
-                                                       : QStringLiteral("neutral"),
+            Presentation::reviewStatusLabel(status),
+            status == QStringLiteral("closed") ? QStringLiteral("success")
+                                               : QStringLiteral("neutral"),
             QString::fromStdString(review.nextAction)));
     }
 

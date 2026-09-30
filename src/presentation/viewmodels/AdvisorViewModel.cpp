@@ -1,5 +1,7 @@
 #include "presentation/viewmodels/AdvisorViewModel.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QVariantMap>
 
 #include "database/DatabaseManager.h"
@@ -14,23 +16,6 @@
 #include "presentation/viewmodels/VmSupport.h"
 
 namespace PersonOS {
-
-namespace {
-
-QVariantMap row(const Domain::AiJob &job)
-{
-    return {{QStringLiteral("uid"), QString::fromStdString(job.uid.value())},
-            {QStringLiteral("title"), QString::fromStdString(job.jobType)},
-            {QStringLiteral("subtitle"), QString::fromStdString(job.requestJson)},
-            {QStringLiteral("badge"), QString::fromStdString(Domain::toString(job.status))},
-            {QStringLiteral("badgeTone"),
-             job.status == Domain::AiJobStatus::Completed ? QStringLiteral("success")
-                                                          : QStringLiteral("neutral")},
-            {QStringLiteral("detail"),
-             job.resultJson ? QString::fromStdString(*job.resultJson) : QString()}};
-}
-
-} // namespace
 
 AdvisorViewModel::AdvisorViewModel(QObject *parent) : QObject(parent) {}
 
@@ -62,20 +47,32 @@ void AdvisorViewModel::refresh()
         QVariantMap map;
         map.insert(QStringLiteral("uid"), QString::fromStdString(decision.uid.value()));
         map.insert(QStringLiteral("title"), QStringLiteral("咨询回答"));
-        map.insert(QStringLiteral("subtitle"),
-                   QString::fromStdString(decision.candidateJson));
-        map.insert(QStringLiteral("badge"),
-                   QString::fromStdString(
-                       decision.sourceMode == Domain::SourceMode::KnowledgeGrounded
-                           ? "knowledge_grounded"
-                           : (decision.sourceMode == Domain::SourceMode::PartiallyGrounded
-                                  ? "partially_grounded"
-                                  : "ungrounded")));
+        // 结构化字段解析：问题来自 input_snapshot_json.question，
+        // 回答文本来自 candidate_json.user_text——原始 JSON 不直接展示
+        const QJsonDocument inputDoc = QJsonDocument::fromJson(
+            QByteArray::fromStdString(decision.inputSnapshotJson));
+        QString question = inputDoc.object().value(QStringLiteral("question")).toString();
+        if (question.isEmpty())
+            question = QStringLiteral("（未记录问题）");
+        const QJsonDocument candidateDoc = QJsonDocument::fromJson(
+            QByteArray::fromStdString(decision.candidateJson));
+        QString answer = candidateDoc.object().value(QStringLiteral("user_text")).toString();
+        if (answer.isEmpty() && !decision.candidateJson.empty())
+            answer = QStringLiteral("（回答内容无法解析，原始记录已保存于决策记录）");
+        map.insert(QStringLiteral("subtitle"), question);
+        const QString rawSourceMode =
+            QString::fromStdString(
+                decision.sourceMode == Domain::SourceMode::KnowledgeGrounded
+                    ? "knowledge_grounded"
+                    : (decision.sourceMode == Domain::SourceMode::PartiallyGrounded
+                           ? "partially_grounded"
+                           : "ungrounded"));
+        map.insert(QStringLiteral("badge"), Presentation::sourceModeLabel(rawSourceMode));
         map.insert(QStringLiteral("badgeTone"),
                    decision.sourceMode == Domain::SourceMode::Ungrounded
                        ? QStringLiteral("warning")
                        : QStringLiteral("info"));
-        map.insert(QStringLiteral("detail"), QString());
+        map.insert(QStringLiteral("detail"), answer);
         rows.append(map);
     }
     m_historyModel.replace(rows);
@@ -104,7 +101,9 @@ void AdvisorViewModel::send(const QString &question)
 
     const auto userUid = Presentation::activeUserUid(DatabaseManager::instance().database());
     if (!userUid) {
-        setState(QStringLiteral("empty"));
+        // error 状态才能让 StateViews 渲染错误横幅（empty 状态下错误不可见，
+        // 用户会以为"没有任何反应"）；输入区在 error 状态仍可见，可重试
+        setState(QStringLiteral("error"));
         setError(QStringLiteral("缺少用户档案"));
         return;
     }
@@ -136,6 +135,64 @@ void AdvisorViewModel::send(const QString &question)
             setError(error);
         }
     });
+}
+
+void AdvisorViewModel::openDetail(const QString &uid)
+{
+    const auto parsed = Domain::Uid::parse(uid.toStdString());
+    if (!parsed) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("无效的回答标识"));
+        return;
+    }
+    const auto database = DatabaseManager::instance().database();
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::SqlAiRepository repo(database, clock);
+    const auto decision = repo.findDecision(*parsed);
+    if (!decision) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("回答不存在"));
+        return;
+    }
+    const QJsonDocument inputDoc = QJsonDocument::fromJson(
+        QByteArray::fromStdString(decision->inputSnapshotJson));
+    m_detailQuestion = inputDoc.object().value(QStringLiteral("question")).toString();
+    if (m_detailQuestion.isEmpty())
+        m_detailQuestion = QStringLiteral("（未记录问题）");
+    const QJsonDocument candidateDoc = QJsonDocument::fromJson(
+        QByteArray::fromStdString(decision->candidateJson));
+    m_detailAnswer = candidateDoc.object().value(QStringLiteral("user_text")).toString();
+    if (m_detailAnswer.isEmpty() && !decision->candidateJson.empty())
+        m_detailAnswer = QStringLiteral("（回答内容无法解析，原始记录已保存）");
+    m_detailVisible = true;
+    emit detailChanged();
+}
+
+void AdvisorViewModel::closeDetail()
+{
+    m_detailVisible = false;
+    emit detailChanged();
+}
+
+void AdvisorViewModel::deleteAnswer(const QString &uid)
+{
+    const auto parsed = Domain::Uid::parse(uid.toStdString());
+    if (!parsed) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("无效的回答标识"));
+        return;
+    }
+    const auto database = DatabaseManager::instance().database();
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::SqlAiRepository repo(database, clock);
+    const auto removed = repo.deleteDecision(*parsed);
+    if (!removed.ok) {
+        setState(QStringLiteral("error"));
+        setError(Presentation::friendlyError(removed.error.message, removed.error.detail));
+        return;
+    }
+    closeDetail();
+    refresh();
 }
 
 void AdvisorViewModel::cancelLatestPending()

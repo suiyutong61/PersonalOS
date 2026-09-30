@@ -12,6 +12,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: ThemeTokens.spacingLg
@@ -26,7 +29,9 @@ Item {
             Layout.fillWidth: true
             pageState: vm.pageState
             message: vm.lastError
-            contentCount: vm.goalCount + (vm.activeMelTitle !== "" ? 1 : 0)
+            // 空态提示由下方卡片给出更具体的引导(如"尚未建立学习目标"),
+            // 不重复显示通用"暂无内容"
+            contentCount: Math.max(1, vm.goalCount + (vm.activeMelTitle !== "" ? 1 : 0))
         }
 
         RowLayout {

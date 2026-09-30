@@ -27,10 +27,11 @@ ModelConnectionTestService::test(const Domain::Uid &configUid)
     test.providerConfigUid = configUid;
     test.testedAt = m_clock.utcIso();
     test.providerModel = config->model;
-    const auto capabilityDoc = QJsonDocument::fromJson(
-        QByteArray::fromStdString(config->capabilitiesJson));
-    test.embeddingRequired = capabilityDoc.isObject()
-        && capabilityDoc.object().value(QStringLiteral("embedding")).toBool(false);
+    // 探测诚实性：只要提供了 embedding 端口就真实探测。config 的
+    // capabilitiesJson 在生产写入恒为 {"text":true}，不能作为探测依据
+    // （此前 embeddingRequired 恒 false → 从未探测却记录 embedding:true，
+    // 且 HTTP 向量通道永不触发）；测试结果随后回写 config。
+    test.embeddingRequired = m_embeddingProvider != nullptr;
 
     Application::ProviderRequest request;
     request.systemPrompt = "Return exactly one JSON object matching the contract.";

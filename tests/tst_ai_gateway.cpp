@@ -121,10 +121,13 @@ private slots:
             QFAIL(qPrintable(QString::fromStdString(submitted.error().message + ": "
                                                     + submitted.error().detail)));
         QVERIFY(submitted.value().status == Domain::AiJobStatus::Queued);
-        // 幂等键重复 → Conflict
+        // 幂等键重复 → 复用既有任务（真实使用中重复提交是常态，不报错）
         const auto duplicate = gateway.submit(input);
-        QVERIFY(!duplicate);
-        QVERIFY(duplicate.error().code == Application::ErrorCode::Conflict);
+        if (!duplicate)
+            QFAIL(qPrintable(QString::fromStdString(duplicate.error().message + ": "
+                                                    + duplicate.error().detail)));
+        QCOMPARE(duplicate.value().uid.value(), submitted.value().uid.value());
+        QCOMPARE(duplicate.value().idempotencyKey, submitted.value().idempotencyKey);
     }
 
     void executeSuccessAndContextPersistence()

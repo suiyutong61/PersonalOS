@@ -70,6 +70,7 @@ struct KnowledgeItem
     LibraryType libraryType = LibraryType::Paper;
     std::string title;
     std::string domainCode;           // 关联分类方向（learning 等）
+    std::string referenceCode;        // 编号(如 7.41 / 7.41-M1),基于 Research Base 01-43
     KnowledgeStatus status = KnowledgeStatus::Candidate;
     std::optional<std::string> currentVersionUid;
     std::string ownerScope = "system";   // system / user

@@ -139,6 +139,9 @@ struct DecisionRecord
     DecisionUserStatus userStatus = DecisionUserStatus::Pending;
     std::string createdAt;
     std::optional<std::string> confirmedAt;
+    // 关联的 AI 任务 uid(2026-09-29 用户决策:咨询回答可物理删除,
+    // 删除时连同任务/调用记录一起;可空=历史数据无关联)
+    std::optional<std::string> jobUid;
 
     bool isValid() const
     {

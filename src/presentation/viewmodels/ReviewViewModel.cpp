@@ -115,6 +115,7 @@ void ReviewViewModel::refresh()
     if (recent.empty()) {
         m_reviewUid.clear();
         m_reviewState.clear();
+        m_reviewStateLabel.clear();
         m_questionnaireModel.clear();
         m_assessmentsModel.clear();
         setState(QStringLiteral("empty"));
@@ -124,6 +125,7 @@ void ReviewViewModel::refresh()
     const Domain::Review &review = recent.front();
     m_reviewUid = QString::fromStdString(review.uid.value());
     m_reviewState = QString::fromStdString(Domain::toString(review.status));
+    m_reviewStateLabel = Presentation::reviewStatusLabel(m_reviewState);
     m_reviewSummary = QString::fromStdString(review.summary);
     m_reviewProblems.clear();
     m_reviewNextActions = QString::fromStdString(review.nextAction);
@@ -162,9 +164,13 @@ void ReviewViewModel::refresh()
     for (const auto &assessment : assessmentRepo.listForUser(*userUid, 20)) {
         assessmentRows.append(QVariantMap{
             {QStringLiteral("uid"), QString::fromStdString(assessment.uid.value())},
-            {QStringLiteral("title"), QString::fromStdString(assessment.assessmentType)},
+            {QStringLiteral("title"),
+             Presentation::assessmentTypeLabel(
+                 QString::fromStdString(assessment.assessmentType))},
             {QStringLiteral("subtitle"), QString::fromStdString(assessment.scopeJson)},
-            {QStringLiteral("badge"), QString::fromStdString(Domain::toString(assessment.status))},
+            {QStringLiteral("badge"),
+             Presentation::assessmentStatusLabel(
+                 QString::fromStdString(Domain::toString(assessment.status)))},
             {QStringLiteral("badgeTone"),
              assessment.status == Domain::AssessmentStatus::Scored
                  ? QStringLiteral("success")
@@ -189,13 +195,18 @@ void ReviewViewModel::rebuildQuestionnaireRows()
                 : (choice.first == QStringLiteral("no_change") ? QStringLiteral("无明显变化")
                                                                : QStringLiteral("已跳过"));
         rows.append(QVariantMap{{QStringLiteral("uid"), code},
-                                {QStringLiteral("title"), code},
+                                {QStringLiteral("title"),
+                                 Presentation::questionnaireItemLabel(code)},
                                 {QStringLiteral("subtitle"),
                                  choice.first.isEmpty() ? QStringLiteral("未处理") : choiceText},
                                 {QStringLiteral("badge"),
                                  choice.first.isEmpty() ? QStringLiteral("未处理") : choiceText},
                                 {QStringLiteral("badgeTone"),
-                                 QString::fromLatin1(kChoiceTone(choice.first))}});
+                                 QString::fromLatin1(kChoiceTone(choice.first))},
+                                // 数值角色:问卷作答值(SpinBox 绑定模型值,
+                                // 否则整模替换后显示值被重置为 3 且会悄悄改回已存值)
+                                {QStringLiteral("value"),
+                                 choice.first == QStringLiteral("answer") ? choice.second : 3}});
     }
     m_questionnaireModel.replace(rows);
     emit dataChanged();

@@ -21,6 +21,10 @@ public:
         BadgeRole,
         BadgeToneRole,
         PayloadRole,
+        RetractableRole,
+        ValueRole,       // 数值角色(问卷作答值等;默认 0)
+        IsDefaultRole,   // 布尔角色(默认连接徽标等;默认 false)
+        KindRole,        // 原始类型键(过滤/门控用;展示层另用中文标签)
     };
 
     explicit ListItemModel(QObject *parent = nullptr);

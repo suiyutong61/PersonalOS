@@ -106,7 +106,7 @@ private slots:
                                                          m_clock);
             Infrastructure::DatabaseManagerSwitch switcher;
             Application::RestoreService restores(repo, switcher, m_uids, m_clock);
-            const auto restored = restores.restore(record.uid);
+            const auto restored = restores.restore(record.uid, DatabaseManager::instance().schemaVersion());
             if (!restored)
                 QFAIL(qPrintable(QString::fromStdString(restored.error().message + ": "
                                                         + restored.error().detail)));
@@ -159,7 +159,8 @@ private slots:
             Infrastructure::DatabaseManagerSwitch switcher;
             Application::RestoreService restores(repo, switcher, m_uids, m_clock);
             const auto missing = restores.restore(
-                *Domain::Uid::parse("00000000-0000-0000-0000-0000000000ff"));
+                *Domain::Uid::parse("00000000-0000-0000-0000-0000000000ff"),
+                DatabaseManager::instance().schemaVersion());
             QVERIFY(!missing);
             QVERIFY(missing.error().code == Application::ErrorCode::NotFound);
         }
@@ -182,7 +183,7 @@ private slots:
                                                          m_clock);
             Infrastructure::DatabaseManagerSwitch switcher;
             Application::RestoreService restores(repo, switcher, m_uids, m_clock);
-            const auto tampered = restores.restore(record.uid);
+            const auto tampered = restores.restore(record.uid, DatabaseManager::instance().schemaVersion());
             QVERIFY(!tampered);
             QVERIFY(tampered.error().code == Application::ErrorCode::Conflict);
         }
@@ -200,7 +201,7 @@ private slots:
             QVERIFY(repo.insert(unverified).ok);
             Infrastructure::DatabaseManagerSwitch switcher;
             Application::RestoreService restores(repo, switcher, m_uids, m_clock);
-            const auto rejected = restores.restore(unverified.uid);
+            const auto rejected = restores.restore(unverified.uid, DatabaseManager::instance().schemaVersion());
             QVERIFY(!rejected);
             QVERIFY(rejected.error().code == Application::ErrorCode::Conflict);
         }

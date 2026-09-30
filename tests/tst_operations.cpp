@@ -31,9 +31,13 @@ class FakeNotifications final : public Application::NotificationPort
 public:
     bool succeed = true;
     int delivered = 0;
-    bool deliver(const std::string &, const std::string &) override
+    std::string lastTitle;
+    std::string lastBody;
+    bool deliver(const std::string &title, const std::string &body) override
     {
         ++delivered;
+        lastTitle = title;
+        lastBody = body;
         return succeed;
     }
 };
@@ -89,45 +93,176 @@ private slots:
 
     void reminderScheduleDispatchAndIdempotency()
     {
+        Infrastructure::SqlMelRepository melRepo(DatabaseManager::instance().database(),
+                                                 m_clock);
         Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
                                                      m_clock);
         FakeNotifications notifications;
-        Application::ReminderService reminders(repo, notifications, m_uids, m_clock);
+        Application::ReminderService reminders(repo, melRepo, notifications, m_uids, m_clock);
+        const auto userUid = *Domain::Uid::parse(kUserUid);
 
-        // 规则
-        Application::ReminderService::RuleInput input;
-        input.ownerType = "mel";
-        input.ownerUid = "00000000-0000-0000-0000-0000000000dd";
-        input.offsetMin = 30;
-        const auto rule = reminders.createRule(input);
-        if (!rule)
-            QFAIL(qPrintable(QString::fromStdString(rule.error().message + ": "
-                                                    + rule.error().detail)));
+        // 活跃 MEL（Deadline 在过去）
+        createOverdueMel(melRepo, QStringLiteral("提醒测试 MEL"),
+                         QStringLiteral("2020-01-04T00:00:00Z").toStdString());
 
-        // 幂等调度：同触发时刻两次只产生一批投递
-        const auto first = reminders.scheduleDue("2020-01-01T00:00:00Z");
+        // 自动默认规则：幂等（第二次不再新建）
+        const auto ensured = reminders.ensureMelDeadlineReminders(userUid, 50);
+        QVERIFY(ensured && ensured.value() >= 1);
+        const auto ensuredAgain = reminders.ensureMelDeadlineReminders(userUid, 50);
+        QVERIFY(ensuredAgain && ensuredAgain.value() == 0);
+
+        // 到期计算 = Deadline − 0 分钟（2020 年已过）→ 生成投递；幂等键
+        // = rule uid + 到期时刻，同一次到期只产生一批（DB-06）
+        const auto first = reminders.scheduleDue("2020-02-01T00:00:00Z");
         QVERIFY(first && first.value() >= 1);
-        const auto second = reminders.scheduleDue("2020-01-01T00:00:00Z");
+        const auto second = reminders.scheduleDue("2020-02-01T00:00:00Z");
         QVERIFY(second && second.value() == 0);
 
-        // 投递成功
+        // 投递成功：通知内容包含 MEL 标题与 Deadline 语义
         const auto dispatched = reminders.dispatchPending();
         QVERIFY(dispatched && dispatched.value() >= 1);
         QVERIFY(notifications.delivered >= 1);
+        QVERIFY2(QString::fromStdString(notifications.lastBody)
+                     .contains(QStringLiteral("提醒测试 MEL")),
+                 "notification body must contain the MEL title");
+        QVERIFY2(QString::fromStdString(notifications.lastBody)
+                     .contains(QStringLiteral("已到 Deadline")),
+                 "zero-offset reminder must mention the deadline");
 
-        // 通知失败只记录 failed，不改变业务状态
+        // 通知失败：failed 计入重试；三次尝试后终态失败不再重选
         FakeNotifications failing;
         failing.succeed = false;
-        Application::ReminderService failingReminders(repo, failing, m_uids, m_clock);
-        QVERIFY(failingReminders.scheduleDue("2020-01-02T00:00:00Z").value() >= 1);
-        const auto failedDispatch = failingReminders.dispatchPending();
-        QVERIFY(failedDispatch && failedDispatch.value() == 0);   // 0 成功投递
+        Application::ReminderService failingReminders(repo, melRepo, failing, m_uids, m_clock);
+        createOverdueMel(melRepo, QStringLiteral("提醒测试 MEL 二"),
+                         QStringLiteral("2020-01-05T00:00:00Z").toStdString());
+        QCOMPARE(failingReminders.ensureMelDeadlineReminders(userUid, 50).value(), 1);
+        QCOMPARE(failingReminders.scheduleDue("2020-02-01T00:00:00Z").value(), 1);
+        for (int attempt = 0; attempt < 4; ++attempt)
+            QCOMPARE(failingReminders.dispatchPending().value(), 0);   // 三次尝试后无待投递
+        QSqlQuery failedRow(DatabaseManager::instance().database());
+        QVERIFY(failedRow.exec(QStringLiteral(
+            "SELECT status, attempt_count FROM reminder_deliveries_v6 "
+            "ORDER BY id DESC LIMIT 1")));
+        QVERIFY(failedRow.next());
+        QCOMPARE(failedRow.value(0).toString(), QStringLiteral("failed"));
+        QCOMPARE(failedRow.value(1).toInt(), 3);
 
-        // 关闭提醒
-        const auto disabled = reminders.disableRule(rule.value().uid, 1);
+        // 静默时段：全天静默 → suppressed（不打扰用户，也不伪装成功）
+        createOverdueMel(melRepo, QStringLiteral("提醒测试 MEL 三"),
+                         QStringLiteral("2020-01-06T00:00:00Z").toStdString());
+        QCOMPARE(reminders.ensureMelDeadlineReminders(userUid, 50).value(), 1);
+        QSqlQuery quietRuleQ(DatabaseManager::instance().database());
+        quietRuleQ.prepare(QStringLiteral(
+            "SELECT uid FROM reminder_rules_v6 WHERE owner_uid="
+            "(SELECT uid FROM mels_v4 WHERE title=?)"));
+        quietRuleQ.addBindValue(QStringLiteral("提醒测试 MEL 三"));
+        QVERIFY(quietRuleQ.exec() && quietRuleQ.next());
+        const auto quietRuleUid =
+            *Domain::Uid::parse(quietRuleQ.value(0).toString().toStdString());
+        const auto quietRule = repo.findRule(quietRuleUid);
+        QVERIFY(quietRule);
+        auto updatedQuiet = *quietRule;
+        updatedQuiet.quietHoursJson = std::string("{\"start\":\"00:00\",\"end\":\"23:59\"}");
+        QVERIFY(repo.updateRule(updatedQuiet, quietRule->revision).ok);
+        QVERIFY(reminders.scheduleDue("2020-02-01T00:00:00Z").value() == 1);
+        QCOMPARE(reminders.dispatchPending().value(), 0);   // 静默不投递
+        QSqlQuery suppressedCount(DatabaseManager::instance().database());
+        QVERIFY(suppressedCount.exec(QStringLiteral(
+            "SELECT COUNT(*) FROM reminder_deliveries_v6 WHERE status='suppressed'")));
+        QVERIFY(suppressedCount.next());
+        QCOMPARE(suppressedCount.value(0).toInt(), 1);
+
+        // 提前量：Deadline 在 1 小时后、提前 30 分钟 → 现在不调度
+        const auto futureMel = createActiveMel(melRepo, QStringLiteral("提醒测试 MEL 四"),
+                                               m_clock.utcIso(),
+                                               m_clock.utcIsoPlusMinutes(60));
+        QVERIFY(!futureMel.empty());
+        Application::ReminderService::RuleInput futureInput;
+        futureInput.ownerType = "mel";
+        futureInput.ownerUid = futureMel.value();
+        futureInput.offsetMin = 30;
+        QVERIFY(reminders.createRule(futureInput));
+        QCOMPARE(reminders.scheduleDue(m_clock.utcIso()).value(), 0);   // dueAt 在未来
+
+        // 停用规则后不再调度；ensure 不自动重建（停用是用户决定）
+        const auto disabled =
+            reminders.disableRule(quietRuleUid, updatedQuiet.revision + 1);
         QVERIFY(disabled && !disabled.value().enabled);
-        // 关闭后不产生投递
-        QVERIFY(reminders.scheduleDue("2020-01-03T00:00:00Z").value() == 0);
+        QVERIFY(reminders.ensureMelDeadlineReminders(userUid, 50).value() == 0);
+    }
+
+    void deliveryRetryAndOwnerRulesAtRepositoryLevel()
+    {
+        Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
+                                                     m_clock);
+        // 规则（owner 独立于既有槽位，避免互扰）
+        Domain::ReminderRule rule;
+        rule.uid = m_uids.next();
+        rule.ownerType = "mel";
+        rule.ownerUid = "00000000-0000-0000-0000-0000000000de";
+        rule.offsetMin = 0;
+        rule.channel = "app";
+        QVERIFY(repo.insertRule(rule).ok);
+
+        // rulesForOwner 含停用规则（停用是用户决定，不得自动重建默认规则）
+        QCOMPARE(repo.rulesForOwner("mel", "00000000-0000-0000-0000-0000000000de").size(), 1);
+        auto disabled = rule;
+        disabled.enabled = false;
+        QVERIFY(repo.updateRule(disabled, 1).ok);
+        QCOMPARE(repo.rulesForOwner("mel", "00000000-0000-0000-0000-0000000000de").size(), 1);
+
+        // 投递行：failed 重选直到 attempt_count=3，之后终态失败不再重选
+        Domain::ReminderDelivery delivery;
+        delivery.uid = m_uids.next();
+        delivery.ruleUid = rule.uid;
+        delivery.scheduledAt = "2020-01-01T00:00:00Z";
+        delivery.idempotencyKey = "reminder:repo-test:retry:1";
+        QVERIFY(repo.insertDelivery(delivery).ok);
+
+        // 注：既有槽位留下的 failed 行（attempt<3）也会被重选，断言按幂等键
+        // 定位本槽位的行，不断言全表数量
+        const auto findMine = [](const std::vector<Domain::ReminderDelivery> &rows,
+                                 const std::string &key)
+            -> const Domain::ReminderDelivery * {
+            for (const auto &row : rows)
+                if (row.idempotencyKey == key)
+                    return &row;
+            return nullptr;
+        };
+
+        auto due = repo.pendingDeliveries("2020-02-01T00:00:00Z");
+        QVERIFY(findMine(due, "reminder:repo-test:retry:1") != nullptr);
+        QCOMPARE(findMine(due, "reminder:repo-test:retry:1")->attemptCount, 0);
+        QCOMPARE(findMine(due, "reminder:repo-test:retry:1")->ruleUid, rule.uid);
+
+        for (int attempt = 1; attempt <= 3; ++attempt) {
+            QVERIFY(repo.markDelivery(delivery.uid, "failed", "notification failed").ok);
+            due = repo.pendingDeliveries("2020-02-01T00:00:00Z");
+            const auto mine = findMine(due, "reminder:repo-test:retry:1");
+            if (attempt < 3)
+                QVERIFY(mine != nullptr);   // 未达上限继续重选
+            else
+                QVERIFY(mine == nullptr);   // 终态失败不再重选
+        }
+
+        // 投递成功：delivered_at 落库、attempt_count=1、recentDeliveries 最新在前
+        Domain::ReminderDelivery good;
+        good.uid = m_uids.next();
+        good.ruleUid = rule.uid;
+        good.scheduledAt = "2020-01-02T00:00:00Z";
+        good.idempotencyKey = "reminder:repo-test:retry:2";
+        QVERIFY(repo.insertDelivery(good).ok);
+        QVERIFY(repo.markDelivery(good.uid, "delivered", std::nullopt).ok);
+
+        const auto recent = repo.recentDeliveries(10);
+        QVERIFY(recent.size() >= 2);
+        QVERIFY(recent.front().uid == good.uid);   // 最新在前
+        QCOMPARE(recent.front().status, std::string("delivered"));
+        QVERIFY(recent.front().deliveredAt.has_value());
+        QCOMPARE(recent.front().attemptCount, 1);
+        const auto failedRow = recent[1];
+        QCOMPARE(failedRow.status, std::string("failed"));
+        QCOMPARE(failedRow.attemptCount, 3);
     }
 
     void achievementUniqueness()
@@ -197,8 +332,10 @@ private slots:
         Infrastructure::SqlOperationsRepository opsRepo(
             DatabaseManager::instance().database(), m_clock);
         FakeNotifications notifications;
-        Application::ReminderService reminders(opsRepo, notifications, m_uids, m_clock);
-        Application::StartupRecovery recovery(melRepo, melUseCases, reminders, m_clock);
+        Application::ReminderService reminders(opsRepo, melRepo, notifications, m_uids,
+                                               m_clock);
+        Application::StartupRecovery recovery(melRepo, melUseCases, reminders,
+                                              *Domain::Uid::parse(kUserUid), m_clock);
 
         // 过期窗口 MEL：创建→确认→激活
         Application::MelUseCases::CreateInput input;
@@ -251,6 +388,62 @@ private slots:
     }
 
 private:
+    QString goalUidText()
+    {
+        QSqlQuery q(DatabaseManager::instance().database());
+        q.exec(QStringLiteral("SELECT uid FROM goals_v3 WHERE title='运维测试目标'"));
+        if (!q.next())
+            return {};
+        return q.value(0).toString();
+    }
+
+    QString manifestVersionUidText()
+    {
+        QSqlQuery q(DatabaseManager::instance().database());
+        q.exec(QStringLiteral("SELECT uid FROM domain_manifest_versions_v3 WHERE version_no=1"));
+        if (!q.next())
+            return {};
+        return q.value(0).toString();
+    }
+
+    // 创建并激活 MEL（Deadline 在过去 → 逾期未结算，供调度语义测试）
+    Domain::Uid createOverdueMel(Infrastructure::SqlMelRepository &melRepo,
+                                 const QString &title, const std::string &plannedEndAt)
+    {
+        return createActiveMel(melRepo, title, "2020-01-01T00:00:00Z", plannedEndAt);
+    }
+
+    Domain::Uid createActiveMel(Infrastructure::SqlMelRepository &melRepo,
+                                const QString &title, const std::string &plannedStartAt,
+                                const std::string &plannedEndAt)
+    {
+        Application::MelUseCases melUseCases(melRepo, m_uids, m_clock);
+        Application::MelUseCases::CreateInput input;
+        input.userId = *Domain::Uid::parse(kUserUid);
+        input.goalId = *Domain::Uid::parse(goalUidText().toStdString());
+        input.manifestVersionId =
+            *Domain::Uid::parse(manifestVersionUidText().toStdString());
+        input.title = title.toStdString();
+        input.plannedStartAt = plannedStartAt;
+        input.plannedEndAt = plannedEndAt;
+        input.capacityMin = 120;
+        input.reserveMin = 10;
+        input.rationale = "提醒测试";
+        Domain::MelTask task;
+        task.title = QStringLiteral("任务").toStdString();
+        task.sequenceNo = 0;
+        task.plannedEffortMin = 30;
+        input.tasks = {task};
+        const auto created = melUseCases.createMelProposal(input);
+        if (!created)
+            return {};
+        if (!melUseCases.submitForConfirmation(created.value().mel.uid, 1))
+            return {};
+        if (!melUseCases.confirmAndActivate(created.value().mel.uid, 2))
+            return {};
+        return created.value().mel.uid;
+    }
+
     QString m_path;
     QString m_goalUid;
     Infrastructure::QtSystemClock m_clock;

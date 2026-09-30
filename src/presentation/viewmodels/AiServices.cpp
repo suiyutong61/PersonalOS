@@ -9,6 +9,7 @@
 #include "infrastructure/ai/OpenAiCompatibleProvider.h"
 #include "infrastructure/ai/SqlAiRepository.h"
 #include "infrastructure/ai/WindowsCredentialStore.h"
+#include "infrastructure/embedding/LocalEmbeddingProvider.h"
 #include "infrastructure/foundation/QtSystemClock.h"
 #include "infrastructure/foundation/QtUidGenerator.h"
 #include "infrastructure/knowledge/SqlKnowledgeRetrieval.h"
@@ -35,9 +36,12 @@ std::unique_ptr<PlanningPipeline> buildPlanningPipeline(QSqlDatabase database)
         *pipeline->aiRepo, *pipeline->provider, *pipeline->uids, *pipeline->clock);
     pipeline->retrieval = std::make_unique<Infrastructure::SqlKnowledgeRetrieval>(
         database, *pipeline->clock);
-    // 向量通道（可选）：启用的模型连接声明 embedding 能力时注入；
-    // 否则检索降级为结构化+全文（DR-013）
-    {
+    // 向量通道（可选）：本地嵌入模型优先（零 API 成本）；否则启用的模型
+    // 连接声明 embedding 能力时经 HTTP 注入；两者皆无时检索降级为
+    // 结构化+全文（DR-013）
+    if (Infrastructure::LocalEmbeddingProvider::filesPresent()) {
+        pipeline->retrieval->setEmbeddingPort(&Infrastructure::sharedLocalEmbedding());
+    } else {
         const auto config = pipeline->aiRepo->findFirstEnabledConfig();
         if (config) {
             const QJsonDocument capabilities = QJsonDocument::fromJson(

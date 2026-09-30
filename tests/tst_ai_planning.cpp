@@ -12,6 +12,8 @@
 #include "application/usecases/goal/GoalUseCases.h"
 #include "application/usecases/knowledge/KnowledgeUseCases.h"
 #include "application/usecases/planning/AiPlanningUseCases.h"
+#include "application/usecases/route/RouteStageDetailUseCases.h"
+#include "application/usecases/route/RouteUseCases.h"
 #include "application/usecases/state/CalibrationUseCases.h"
 #include "database/DatabaseManager.h"
 #include "infrastructure/ai/AiGateway.h"
@@ -48,6 +50,19 @@ public:
     }
 };
 
+// 阶段详情契约响应（数量全部在门禁范围内；资料子集由调用方给出）
+std::string stageDetailJson(const std::string &stageUid, const std::string &materialsJson)
+{
+    return std::string("{\"stage_uid\":\"") + stageUid
+           + "\",\"outcomes\":[{\"description\":\"能独立完成服务器基本操作\"}],"
+           + "\"tasks\":[{\"sequence_no\":1,\"title\":\"命令行与文件系统\",\"description\":\"常用命令\",\"estimated_effort_min\":120},"
+           + "{\"sequence_no\":2,\"title\":\"网络配置\",\"description\":\"ip/路由/DNS\",\"estimated_effort_min\":120}],"
+           + "\"projects\":[{\"title\":\"搭建测试环境\",\"description\":\"安装并配置\",\"verifiable_result\":\"环境可访问\"}],"
+           + "\"criteria\":[{\"description\":\"不看资料完成 10 个常用操作\"}],"
+           + "\"suggested_materials\":" + materialsJson + ","
+           + "\"rationale\":\"先命令后网络\",\"source_mode\":\"partially_grounded\"}";
+}
+
 } // namespace
 
 class TstAiPlanning : public QObject
@@ -80,8 +95,8 @@ private slots:
         const bool goalOk = goal.exec(QStringLiteral(
             "INSERT INTO goals_v3(uid,user_id,domain_manifest_id,title,description,goal_type,"
             "status,priority,desired_level_json,user_defined_level,sort_order,created_at,"
-            "updated_at) SELECT '00000000-0000-0000-0000-0000000000ca',u.id,dm.id,'规划目标',"
-            "'学习操作系统','course','active',1,'{}',1,0,'2026-09-27T00:00:00Z',"
+            "updated_at) SELECT '00000000-0000-0000-0000-0000000000ca',u.id,dm.id,'操作系统规划',"
+            "'间隔复习操作系统','course','active',1,'{}',1,0,'2026-09-27T00:00:00Z',"
             "'2026-09-27T00:00:00Z' FROM user_profiles_v3 u, domain_manifests_v3 dm WHERE "
             "u.uid='00000000-0000-0000-0000-0000000000aa' AND dm.domain_code='learning'"));
         if (!goalOk)
@@ -159,9 +174,58 @@ private slots:
     Domain::Uid goalUid()
     {
         QSqlQuery q(DatabaseManager::instance().database());
-        q.exec(QStringLiteral("SELECT uid FROM goals_v3 WHERE title='规划目标'"));
+        q.exec(QStringLiteral("SELECT uid FROM goals_v3 WHERE title='操作系统规划'"));
         q.next();
         return *Domain::Uid::parse(q.value(0).toString().toStdString());
+    }
+
+    // 建一条已确认路线（单阶段），返回阶段 uid（阶段标题参与知识检索）
+    Domain::Uid createConfirmedStage(const QString &title)
+    {
+        Infrastructure::SqlGoalRepository goalsRepo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlRouteRepository routesRepo(DatabaseManager::instance().database(),
+                                                      m_clock);
+        Application::RouteUseCases routeUseCases(routesRepo, goalsRepo, m_uids, m_clock);
+        Domain::RouteStage stage;
+        stage.uid = m_uids.next();
+        stage.title = title.toStdString();
+        // 描述与知识库方法文本（"对操作系统知识进行间隔复习的方法"）保持
+        // bigram 重叠：检索查询按空格分段的 AND 语义要求每段都有命中
+        stage.description =
+            QStringLiteral("对操作系统知识做间隔复习").toStdString();
+        stage.sequenceNo = 1;
+        stage.completionRuleJson = std::string("{}");
+        Application::RouteUseCases::ProposeInput input;
+        input.goalId = goalUid();
+        input.rationale = QStringLiteral("阶段详情测试路线").toStdString();
+        input.evidenceSummary = std::string("无");
+        input.assumptionsJson = std::string("{}");
+        input.stages = {stage};
+        input.createdBy = std::string("ai");
+        const auto proposed = routeUseCases.proposeRoute(input);
+        if (!proposed)
+            return {};
+        const auto confirmed = routeUseCases.confirmRoute(proposed.value().route.uid, 1);
+        if (!confirmed)
+            return {};
+        QSqlQuery q(DatabaseManager::instance().database());
+        q.prepare(QStringLiteral(
+            "SELECT uid FROM route_stages_v3 WHERE title=? ORDER BY id DESC LIMIT 1"));
+        q.addBindValue(title);
+        if (!q.exec() || !q.next())
+            return {};
+        return *Domain::Uid::parse(q.value(0).toString().toStdString());
+    }
+
+    std::string methodItemUidText()
+    {
+        QSqlQuery q(DatabaseManager::instance().database());
+        q.exec(QStringLiteral(
+            "SELECT uid FROM knowledge_items_v5 WHERE title='间隔复习方法'"));
+        if (!q.next())
+            return {};
+        return q.value(0).toString().toStdString();
     }
 
     void routeProposalPipeline()
@@ -171,13 +235,19 @@ private slots:
         provider.canned.userText = "路线建议";
         provider.canned.structuredJson = QStringLiteral(
             "{\"goal_uid\":\"00000000-0000-0000-0000-0000000000ca\","
-            "\"stages\":[{\"title\":\"第一章\"}],\"rationale\":\"依据测试\","
+            "\"stages\":[{\"title\":\"Java 基础\",\"description\":\"掌握语言核心\","
+            "\"relationship\":\"start\",\"depends_on\":[]},{\"title\":\"Spring\","
+            "\"description\":\"构建后端服务\",\"relationship\":\"after\","
+            "\"depends_on\":[\"Java 基础\"]},{\"title\":\"项目实战\","
+            "\"description\":\"完成可部署项目\",\"key_contents\":[\"部署\",\"排障\"],"
+            "\"relationship\":\"after\",\"depends_on\":[\"Spring\"]}],\"rationale\":\"依据测试\","
             "\"evidence_summary\":\"无\",\"assumptions\":{},\"source_mode\":\"ungrounded\"}")
                                              .toStdString();
         const auto pipeline = makePipeline(provider);
         const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
 
-        const auto result = pipeline->generateRouteProposal(userUid, goalUid());
+        const auto result = pipeline->generateRouteProposal(
+            userUid, goalUid(), "我已经掌握 Java 基础，希望数据库与 Web 并行");
         if (!result)
             QFAIL(qPrintable(QString::fromStdString(result.error().message + ": "
                                                     + result.error().detail)));
@@ -188,7 +258,18 @@ private slots:
         // 候选路线已落库（proposed），提示词包含目标与契约说明
         QVERIFY(!provider.lastUserPrompt.empty());
         QVERIFY2(provider.lastUserPrompt.find("goal_uid") != std::string::npos,
-                 qPrintable(QString::fromStdString(provider.lastUserPrompt)));
+                  qPrintable(QString::fromStdString(provider.lastUserPrompt)));
+        QVERIFY2(provider.lastUserPrompt.find("3～5 个粗粒度阶段") != std::string::npos,
+                 "route prompt must require a short coarse-grained route");
+        QVERIFY2(provider.lastUserPrompt.find("parallel") != std::string::npos,
+                 "route prompt must request dependency and parallel semantics");
+        QVERIFY2(provider.lastUserPrompt.find("我已经掌握 Java 基础") != std::string::npos,
+                 "user guidance must be included in route planning context");
+        // 检索命中内容必须进入提示词（标题+摘要，而非仅命中计数）
+        QVERIFY2(provider.lastUserPrompt.find("items") != std::string::npos,
+                 "knowledge items must be injected into the prompt");
+        QVERIFY2(provider.lastUserPrompt.find("间隔复习方法") != std::string::npos,
+                 "hit title must be injected into the prompt");
 
         Infrastructure::SqlRouteRepository routes(DatabaseManager::instance().database(),
                                                   m_clock);
@@ -198,6 +279,21 @@ private slots:
             if (route.status == Domain::RouteStatus::Draft)   // AI 候选（既有约定）
                 sawDraft = true;
         QVERIFY(sawDraft);
+
+        QSqlQuery stageFacts(DatabaseManager::instance().database());
+        QVERIFY(stageFacts.exec(QStringLiteral(
+            "SELECT title, description, completion_rule_json FROM route_stages_v3 "
+            "ORDER BY sequence_no")));
+        QVERIFY(stageFacts.next());
+        QCOMPARE(stageFacts.value(0).toString(), QStringLiteral("Java 基础"));
+        QCOMPARE(stageFacts.value(1).toString(), QStringLiteral("掌握语言核心"));
+        QVERIFY(stageFacts.value(2).toString().contains(QStringLiteral("start")));
+        QVERIFY(stageFacts.next());
+        QCOMPARE(stageFacts.value(0).toString(), QStringLiteral("Spring"));
+        QVERIFY(stageFacts.value(2).toString().contains(QStringLiteral("Java 基础")));
+        QVERIFY(stageFacts.next());
+        QCOMPARE(stageFacts.value(0).toString(), QStringLiteral("项目实战"));
+        QVERIFY(stageFacts.value(2).toString().contains(QStringLiteral("排障")));
 
         // 决策记录 pending（用户确认前不生效）
         Infrastructure::SqlAiRepository ai(DatabaseManager::instance().database(), m_clock);
@@ -218,6 +314,53 @@ private slots:
             *Domain::Uid::parse(result.value().decisionUid));
         QVERIFY(after);
         QVERIFY(after->userStatus == Domain::DecisionUserStatus::Accepted);
+    }
+
+    void routeConfirmMarksDecisionAccepted()
+    {
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson = QStringLiteral(
+            "{\"goal_uid\":\"00000000-0000-0000-0000-0000000000ca\","
+            "\"stages\":[{\"title\":\"A\"},{\"title\":\"B\"},{\"title\":\"C\"}],"
+            "\"rationale\":\"依据测试\",\"evidence_summary\":\"无\",\"assumptions\":{},"
+            "\"source_mode\":\"ungrounded\"}")
+                                             .toStdString();
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->generateRouteProposal(userUid, goalUid());
+        if (!result)
+            QFAIL(qPrintable(QString::fromStdString(result.error().message + ": "
+                                                    + result.error().detail)));
+        const auto routeUid = *Domain::Uid::parse(result.value().aggregateUid);
+        QVERIFY(!routeUid.empty());
+
+        // 决策最初 Pending
+        Infrastructure::SqlAiRepository ai(DatabaseManager::instance().database(), m_clock);
+        const auto before = ai.listDecisions("route_proposal", 10);
+        QVERIFY(!before.empty());
+        QVERIFY(before.front().userStatus == Domain::DecisionUserStatus::Pending);
+
+        // 用户确认路线 → 决策 accepted + selected_json 记录确认采用的内容
+        Infrastructure::SqlGoalRepository goalsRepo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlRouteRepository routesRepo(DatabaseManager::instance().database(),
+                                                      m_clock);
+        Application::RouteUseCases routeUseCases(routesRepo, goalsRepo, m_uids, m_clock, &ai);
+        const auto confirmed = routeUseCases.confirmRoute(routeUid, 1);
+        if (!confirmed)
+            QFAIL(qPrintable(QString::fromStdString(confirmed.error().message + ": "
+                                                    + confirmed.error().detail)));
+        const auto after = ai.findDecision(before.front().uid);
+        QVERIFY(after);
+        QVERIFY(after->userStatus == Domain::DecisionUserStatus::Accepted);
+        QVERIFY(after->selectedJson && !after->selectedJson->empty());
+
+        // nullptr 决策库路径兼容（历史调用点）：已确认路线重复确认 → Conflict
+        //（状态门禁先于决策标记，不因无决策库而崩溃或伪造成功）
+        Application::RouteUseCases legacyCompatible(routesRepo, goalsRepo, m_uids, m_clock);
+        const auto repeated = legacyCompatible.confirmRoute(routeUid, 2);
+        QVERIFY(!repeated);
     }
 
     void contractFailureWritesNothing()
@@ -370,6 +513,11 @@ private slots:
                                                     + bound.error().detail)));
         QCOMPARE(bound.value(), 1);   // 只有召回内的那条被绑定
 
+        // 候选方法内容(标题/摘要)必须注入提示词(此前只传版本 uid,
+        // 模型看不到方法内容——与检索计数同族缺陷)
+        QVERIFY2(provider.lastUserPrompt.find("间隔复习方法") != std::string::npos,
+                 "method content must be injected into the suggestion prompt");
+
         const auto methods = mels.taskMethodsOf(mel.uid);
         QCOMPARE(methods.size(), 1);
         QCOMPARE(QString::fromStdString(methods.front().methodVersionUid),
@@ -398,6 +546,207 @@ private slots:
         // 方法条目已入库且中文检索可用 → 部分支持（而非无支持）
         QVERIFY(decision->sourceMode == Domain::SourceMode::PartiallyGrounded
                 || decision->sourceMode == Domain::SourceMode::Ungrounded);
+
+        // 物理删除（用户决策）：决策记录与底层任务/调用一起删除
+        const std::string decisionUid = result.value().decisionUid;
+        const std::string jobUid = [&] {
+            QSqlQuery q(DatabaseManager::instance().database());
+            q.exec(QStringLiteral("SELECT job_uid FROM decision_records_v6 WHERE uid='%1'")
+                       .arg(QString::fromStdString(decisionUid)));
+            q.next();
+            return q.value(0).toString().toStdString();
+        }();
+        QVERIFY(!jobUid.empty());
+        const auto removed =
+            ai.deleteDecision(*Domain::Uid::parse(decisionUid));
+        QVERIFY(removed.ok);
+        QVERIFY(!ai.findDecision(*Domain::Uid::parse(decisionUid)));
+        QSqlQuery jobCount(DatabaseManager::instance().database());
+        jobCount.prepare(QStringLiteral("SELECT COUNT(*) FROM ai_jobs_v6 WHERE uid=?"));
+        jobCount.addBindValue(QString::fromStdString(jobUid));
+        QVERIFY(jobCount.exec() && jobCount.next());
+        QCOMPARE(jobCount.value(0).toInt(), 0);
+    }
+
+    void stageDetailPipeline()
+    {
+        const auto stageUid = createConfirmedStage(QStringLiteral("间隔复习操作系统基础"));
+        QVERIFY(!stageUid.empty());
+        const std::string itemUid = methodItemUidText();
+        QVERIFY(!itemUid.empty());
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.userText = "阶段详情建议";
+        provider.canned.structuredJson =
+            stageDetailJson(stageUid.value(),
+                            "[{\"item_uid\":\"" + itemUid
+                                + "\",\"reason\":\"覆盖阶段核心操作\"}]");
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result =
+            pipeline->generateStageDetail(userUid, stageUid, "请把项目练习提前");
+        if (!result)
+            QFAIL(qPrintable(QString::fromStdString(result.error().message + ": "
+                                                    + result.error().detail)));
+        QCOMPARE(result.value().aggregateUid, stageUid.value());
+        QVERIFY(!result.value().decisionUid.empty());
+
+        // 提示词：阶段信息、契约说明（可验证/完成标准）、候选资料 uid、用户意见
+        QVERIFY2(provider.lastUserPrompt.find("间隔复习操作系统基础") != std::string::npos,
+                 "stage title must be injected into the prompt");
+        QVERIFY2(provider.lastUserPrompt.find("可验证") != std::string::npos,
+                 "stage contract hint must be injected into the prompt");
+        QVERIFY2(provider.lastUserPrompt.find(itemUid) != std::string::npos,
+                 "material candidate uid must be injected into the prompt");
+        QVERIFY2(provider.lastUserPrompt.find("请把项目练习提前") != std::string::npos,
+                 "user guidance must be injected into the prompt");
+
+        // 详情 v1 落库（ai，未确认）；资料行 pending 且版本为方法当前版本
+        QSqlQuery detail(DatabaseManager::instance().database());
+        QVERIFY(detail.exec(QStringLiteral(
+            "SELECT version_no, created_by, user_confirmed_at FROM route_stage_details_v11 "
+            "ORDER BY id DESC LIMIT 1")));
+        QVERIFY(detail.next());
+        QCOMPARE(detail.value(0).toInt(), 1);
+        QCOMPARE(detail.value(1).toString(), QStringLiteral("ai"));
+        QVERIFY(detail.value(2).isNull());
+
+        QSqlQuery material(DatabaseManager::instance().database());
+        material.prepare(QStringLiteral(
+            "SELECT knowledge_version_uid, user_choice FROM route_stage_materials_v11 "
+            "WHERE knowledge_item_uid=?"));
+        material.addBindValue(QString::fromStdString(itemUid));
+        QVERIFY(material.exec() && material.next());
+        QCOMPARE(material.value(0).toString(), QString::fromStdString(m_methodVersionUid));
+        QCOMPARE(material.value(1).toString(), QStringLiteral("pending"));
+
+        // 决策记录 Pending（route_stage 聚合），知识快照落库
+        Infrastructure::SqlAiRepository ai(DatabaseManager::instance().database(), m_clock);
+        const auto decisions = ai.listDecisions("stage_detail", 10);
+        QVERIFY(!decisions.empty());
+        const auto &decision = decisions.front();
+        QVERIFY(decision.userStatus == Domain::DecisionUserStatus::Pending);
+        QCOMPARE(decision.aggregateType, std::string("route_stage"));
+        QCOMPARE(decision.aggregateUid, stageUid.value());
+
+        // 整版确认链路：确认后决策 accepted、确认时间落库
+        Infrastructure::SqlRouteRepository routes(DatabaseManager::instance().database(),
+                                                  m_clock);
+        Application::RouteStageDetailUseCases detailUseCases(routes, ai, m_clock);
+        const auto confirmed = detailUseCases.confirmStageDetail(stageUid, 1);
+        if (!confirmed)
+            QFAIL(qPrintable(QString::fromStdString(confirmed.error().message + ": "
+                                                    + confirmed.error().detail)));
+        const auto after = ai.findDecision(decision.uid);
+        QVERIFY(after);
+        QVERIFY(after->userStatus == Domain::DecisionUserStatus::Accepted);
+        QVERIFY(detail.exec(QStringLiteral(
+            "SELECT user_confirmed_at FROM route_stage_details_v11 ORDER BY id DESC LIMIT 1")));
+        QVERIFY(detail.next());
+        QVERIFY(!detail.value(0).isNull());
+    }
+
+    void stageDetailMaterialSubsetViolation()
+    {
+        const auto stageUid = createConfirmedStage(QStringLiteral("间隔复习操作系统进阶"));
+        QVERIFY(!stageUid.empty());
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson = stageDetailJson(
+            stageUid.value(),
+            "[{\"item_uid\":\"ffffffff-ffff-ffff-ffff-ffffffffffff\",\"reason\":\"凭空引用\"}]");
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->generateStageDetail(userUid, stageUid);
+        QVERIFY(!result);
+        QVERIFY(result.error().code == Application::ErrorCode::Validation);
+
+        // 检索确实召回了方法（候选集非空），拒绝来自"凭空引用"而非"零召回"
+        QVERIFY2(provider.lastUserPrompt.find(methodItemUidText()) != std::string::npos,
+                 "retrieved material candidate must be injected into the prompt");
+
+        // 零写入：详情与资料都没有落库
+        QSqlQuery detail(DatabaseManager::instance().database());
+        detail.prepare(QStringLiteral(
+            "SELECT COUNT(*) FROM route_stage_details_v11 WHERE stage_id="
+            "(SELECT id FROM route_stages_v3 WHERE uid=?)"));
+        detail.addBindValue(QString::fromStdString(stageUid.value()));
+        QVERIFY(detail.exec() && detail.next());
+        QCOMPARE(detail.value(0).toInt(), 0);
+        QSqlQuery material(DatabaseManager::instance().database());
+        material.prepare(QStringLiteral(
+            "SELECT COUNT(*) FROM route_stage_materials_v11 WHERE stage_id="
+            "(SELECT id FROM route_stages_v3 WHERE uid=?)"));
+        material.addBindValue(QString::fromStdString(stageUid.value()));
+        QVERIFY(material.exec() && material.next());
+        QCOMPARE(material.value(0).toInt(), 0);
+    }
+
+    void stageDetailRequiresConfirmedRoute()
+    {
+        // draft 路线（不确认）
+        Infrastructure::SqlGoalRepository goalsRepo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlRouteRepository routesRepo(DatabaseManager::instance().database(),
+                                                      m_clock);
+        Application::RouteUseCases routeUseCases(routesRepo, goalsRepo, m_uids, m_clock);
+        Domain::RouteStage stage;
+        stage.uid = m_uids.next();
+        stage.title = QStringLiteral("未确认阶段").toStdString();
+        stage.sequenceNo = 1;
+        stage.completionRuleJson = std::string("{}");
+        Application::RouteUseCases::ProposeInput input;
+        input.goalId = goalUid();
+        input.rationale = QStringLiteral("未确认路线").toStdString();
+        input.evidenceSummary = std::string("无");
+        input.assumptionsJson = std::string("{}");
+        input.stages = {stage};
+        input.createdBy = std::string("ai");
+        QVERIFY(routeUseCases.proposeRoute(input));
+        QSqlQuery stageQ(DatabaseManager::instance().database());
+        QVERIFY(stageQ.exec(QStringLiteral(
+            "SELECT uid FROM route_stages_v3 WHERE title='未确认阶段'")));
+        QVERIFY(stageQ.next());
+        const auto stageUid = *Domain::Uid::parse(stageQ.value(0).toString().toStdString());
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson = stageDetailJson(stageUid.value(), "[]");
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->generateStageDetail(userUid, stageUid);
+        QVERIFY(!result);
+        QVERIFY(result.error().code == Application::ErrorCode::Conflict);
+        QVERIFY2(provider.lastUserPrompt.empty(), "provider must not be called for unconfirmed route");
+    }
+
+    void stageDetailContractFailureWritesNothing()
+    {
+        const auto stageUid = createConfirmedStage(QStringLiteral("间隔复习操作系统部署"));
+        QVERIFY(!stageUid.empty());
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson = "{\"stage_uid\":\"" + stageUid.value() + "\"}";
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->generateStageDetail(userUid, stageUid);
+        QVERIFY(!result);
+        // 网关内契约校验失败按可重试处理（attempt<maxAttempts）→
+        // ExternalUnavailable；runJob 层直接校验失败则为 Validation（既有
+        // contractFailureWritesNothing 同款口径）
+        QVERIFY(result.error().code == Application::ErrorCode::Validation
+                || result.error().code == Application::ErrorCode::ExternalUnavailable);
+
+        QSqlQuery detail(DatabaseManager::instance().database());
+        detail.prepare(QStringLiteral(
+            "SELECT COUNT(*) FROM route_stage_details_v11 WHERE stage_id="
+            "(SELECT id FROM route_stages_v3 WHERE uid=?)"));
+        detail.addBindValue(QString::fromStdString(stageUid.value()));
+        QVERIFY(detail.exec() && detail.next());
+        QCOMPARE(detail.value(0).toInt(), 0);
     }
 
 private:

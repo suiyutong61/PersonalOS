@@ -22,6 +22,10 @@ QVariant ListItemModel::data(const QModelIndex &index, int role) const
     case BadgeRole: return row.value(QStringLiteral("badge"));
     case BadgeToneRole: return row.value(QStringLiteral("badgeTone"));
     case PayloadRole: return row.value(QStringLiteral("payload"));
+    case RetractableRole: return row.value(QStringLiteral("retractable"), false);
+    case ValueRole: return row.value(QStringLiteral("value"), 0);
+    case IsDefaultRole: return row.value(QStringLiteral("isDefault"), false);
+    case KindRole: return row.value(QStringLiteral("kind"), QString());
     default: return {};
     }
 }
@@ -34,7 +38,11 @@ QHash<int, QByteArray> ListItemModel::roleNames() const
             {DetailRole, "detail"},
             {BadgeRole, "badge"},
             {BadgeToneRole, "badgeTone"},
-            {PayloadRole, "payload"}};
+            {PayloadRole, "payload"},
+            {RetractableRole, "retractable"},
+            {ValueRole, "value"},
+            {IsDefaultRole, "isDefault"},
+            {KindRole, "kind"}};
 }
 
 void ListItemModel::replace(const QVariantList &rows)

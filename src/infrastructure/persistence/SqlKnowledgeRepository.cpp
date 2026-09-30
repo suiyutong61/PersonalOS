@@ -78,8 +78,9 @@ std::optional<Domain::KnowledgeItem> SqlKnowledgeRepository::findItem(const Doma
 {
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT uid, library_type, title, domain_code, status, current_version_uid, "
-        "owner_scope, created_by, never_delete, revision FROM knowledge_items_v5 WHERE uid=?"));
+        "SELECT uid, library_type, title, domain_code, reference_code, status, "
+        "current_version_uid, owner_scope, created_by, never_delete, revision "
+        "FROM knowledge_items_v5 WHERE uid=?"));
     query.addBindValue(QString::fromStdString(uid.value()));
     if (!query.exec() || !query.next())
         return std::nullopt;
@@ -93,6 +94,7 @@ std::optional<Domain::KnowledgeItem> SqlKnowledgeRepository::findItem(const Doma
         item.libraryType = *type;
     item.title = query.value("title").toString().toStdString();
     item.domainCode = query.value("domain_code").toString().toStdString();
+    item.referenceCode = query.value("reference_code").toString().toStdString();
     if (const auto status =
             Domain::knowledgeStatusFrom(query.value("status").toString().toStdString()))
         item.status = *status;
@@ -111,8 +113,10 @@ std::vector<Domain::KnowledgeItem> SqlKnowledgeRepository::findItemsByTitle(
     std::vector<Domain::KnowledgeItem> out;
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT uid FROM knowledge_items_v5 WHERE title=? ORDER BY id"));
-    query.addBindValue(QString::fromStdString(title));
+        "SELECT uid FROM knowledge_items_v5 WHERE title LIKE ? AND status<>? "
+        "ORDER BY id"));
+    query.addBindValue(QStringLiteral("%%1%").arg(QString::fromStdString(title)));
+    query.addBindValue(QStringLiteral("archived"));
     if (!query.exec())
         return out;
     while (query.next()) {
@@ -129,8 +133,10 @@ std::vector<Domain::KnowledgeItem> SqlKnowledgeRepository::listRecent(int limit)
 {
     std::vector<Domain::KnowledgeItem> out;
     QSqlQuery query(m_database);
+    // 归档/被替代条目不进入常规列表(审计保留,按需追溯)
     query.prepare(QStringLiteral(
-        "SELECT uid FROM knowledge_items_v5 ORDER BY id DESC LIMIT ?"));
+        "SELECT uid FROM knowledge_items_v5 WHERE status NOT IN ('archived',"
+        "'superseded') ORDER BY id DESC LIMIT ?"));
     query.addBindValue(limit);
     if (!query.exec())
         return out;
@@ -159,13 +165,15 @@ Application::SaveResult SqlKnowledgeRepository::insertItem(const Domain::Knowled
     const std::string now = formatUtcIso(m_clock.now());
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "INSERT INTO knowledge_items_v5(uid, library_type, title, domain_code, status, "
-        "current_version_uid, owner_scope, created_by, never_delete, created_at, "
-        "updated_at, revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)"));
+        "INSERT INTO knowledge_items_v5(uid, library_type, title, domain_code, "
+        "reference_code, status, current_version_uid, owner_scope, created_by, "
+        "never_delete, created_at, updated_at, revision) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)"));
     query.addBindValue(QString::fromStdString(item.uid.value()));
     query.addBindValue(QString::fromStdString(Domain::toString(item.libraryType)));
     query.addBindValue(QString::fromStdString(item.title));
     query.addBindValue(QString::fromStdString(item.domainCode));
+    query.addBindValue(QString::fromStdString(item.referenceCode));
     query.addBindValue(QString::fromStdString(Domain::toString(item.status)));
     query.addBindValue(item.currentVersionUid
                            ? QVariant(QString::fromStdString(*item.currentVersionUid))
@@ -187,13 +195,15 @@ Application::SaveResult SqlKnowledgeRepository::updateItem(const Domain::Knowled
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "UPDATE knowledge_items_v5 SET status=?, current_version_uid=?, title=?, "
-        "domain_code=?, updated_at=?, revision=revision+1 WHERE uid=? AND revision=?"));
+        "domain_code=?, reference_code=?, updated_at=?, revision=revision+1 "
+        "WHERE uid=? AND revision=?"));
     query.addBindValue(QString::fromStdString(Domain::toString(item.status)));
     query.addBindValue(item.currentVersionUid
                            ? QVariant(QString::fromStdString(*item.currentVersionUid))
                            : QVariant());
     query.addBindValue(QString::fromStdString(item.title));
     query.addBindValue(QString::fromStdString(item.domainCode));
+    query.addBindValue(QString::fromStdString(item.referenceCode));
     query.addBindValue(QString::fromStdString(now));
     query.addBindValue(QString::fromStdString(item.uid.value()));
     query.addBindValue(expectedRevision);
@@ -333,6 +343,237 @@ Application::SaveResult SqlKnowledgeRepository::insertSource(const Domain::Sourc
     if (!query.exec())
         return writeFailure("source insert failed", query);
     return {true, false, {}};
+}
+
+std::optional<Domain::SourceRecord> SqlKnowledgeRepository::findSourceByContentHash(
+    const std::string &contentHash)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT uid, source_type, canonical_uri, title, publisher, published_at, "
+        "accessed_at, metadata_json, content_hash, trust_tier, revision "
+        "FROM source_records_v5 WHERE content_hash=? ORDER BY id LIMIT 1"));
+    query.addBindValue(QString::fromStdString(contentHash));
+    if (!query.exec() || !query.next())
+        return std::nullopt;
+    Domain::SourceRecord source;
+    if (const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString()))
+        source.uid = *uid;
+    else
+        return std::nullopt;
+    source.sourceType = query.value(1).toString().toStdString();
+    if (!query.value(2).isNull())
+        source.canonicalUri = query.value(2).toString().toStdString();
+    source.title = query.value(3).toString().toStdString();
+    source.publisher = query.value(4).toString().toStdString();
+    if (!query.value(5).isNull())
+        source.publishedAt = query.value(5).toString().toStdString();
+    source.accessedAt = query.value(6).toString().toStdString();
+    source.metadataJson = query.value(7).toString().toStdString();
+    source.contentHash = query.value(8).toString().toStdString();
+    source.trustTier = query.value(9).toString().toStdString();
+    source.revision = query.value(10).toInt();
+    return source;
+}
+
+std::optional<Domain::MethodDetail> SqlKnowledgeRepository::methodDetailOf(
+    const Domain::Uid &itemUid)
+{
+    const auto pk = resolvePk("SELECT id FROM knowledge_items_v5 WHERE uid=?",
+                              itemUid.value());
+    if (!pk)
+        return std::nullopt;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT method_type, risk_level, evidence_grade, trial_recommended, "
+        "measurement_json FROM methods_v5 WHERE knowledge_item_id=?"));
+    query.addBindValue(*pk);
+    if (!query.exec() || !query.next())
+        return std::nullopt;
+    Domain::MethodDetail detail;
+    detail.itemUid = itemUid;
+    detail.methodType = query.value(0).toString().toStdString();
+    detail.riskLevel = query.value(1).toString().toStdString();
+    detail.evidenceGrade = query.value(2).toString().toStdString();
+    detail.trialRecommended = query.value(3).toInt() != 0;
+    detail.measurementJson = query.value(4).toString().toStdString();
+    return detail;
+}
+
+std::vector<Domain::MethodStep> SqlKnowledgeRepository::methodStepsOf(
+    const Domain::Uid &versionUid)
+{
+    std::vector<Domain::MethodStep> out;
+    const auto pk = resolvePk("SELECT id FROM knowledge_versions_v5 WHERE uid=?",
+                              versionUid.value());
+    if (!pk)
+        return out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT sequence_no, instruction, duration_min, config_json FROM "
+        "method_steps_v5 WHERE method_version_id=? ORDER BY sequence_no"));
+    query.addBindValue(*pk);
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        Domain::MethodStep step;
+        step.methodVersionUid = versionUid;
+        step.sequenceNo = query.value(0).toInt();
+        step.instruction = query.value(1).toString().toStdString();
+        if (!query.value(2).isNull())
+            step.durationMin = query.value(2).toInt();
+        step.configJson = query.value(3).toString().toStdString();
+        out.push_back(std::move(step));
+    }
+    return out;
+}
+
+std::vector<Domain::EvidenceFragment> SqlKnowledgeRepository::evidenceFragmentsOf(
+    const Domain::Uid &versionUid)
+{
+    std::vector<Domain::EvidenceFragment> out;
+    const auto pk = resolvePk("SELECT id FROM knowledge_versions_v5 WHERE uid=?",
+                              versionUid.value());
+    if (!pk)
+        return out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT f.uid, s.uid, a.uid, f.locator_json, f.text, f.fragment_hash "
+        "FROM evidence_fragments_v5 f "
+        "JOIN evidence_links_v5 l ON l.fragment_id=f.id "
+        "JOIN source_records_v5 s ON s.id=f.source_id "
+        "LEFT JOIN file_assets_v5 a ON a.id=f.asset_id "
+        "WHERE l.knowledge_version_id=? ORDER BY f.id"));
+    query.addBindValue(*pk);
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        Domain::EvidenceFragment fragment;
+        if (const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString()))
+            fragment.uid = *uid;
+        else
+            continue;
+        if (const auto uid = Domain::Uid::parse(query.value(1).toString().toStdString()))
+            fragment.sourceUid = *uid;
+        else
+            continue;
+        if (!query.value(2).isNull())
+            if (const auto uid = Domain::Uid::parse(query.value(2).toString().toStdString()))
+                fragment.assetUid = uid->value();
+        fragment.locatorJson = query.value(3).toString().toStdString();
+        fragment.text = query.value(4).toString().toStdString();
+        fragment.fragmentHash = query.value(5).toString().toStdString();
+        out.push_back(std::move(fragment));
+    }
+    return out;
+}
+
+Application::SaveResult SqlKnowledgeRepository::deleteItemCascade(const Domain::Uid &uid)
+{
+    const auto itemPk =
+        resolvePk("SELECT id FROM knowledge_items_v5 WHERE uid=?", uid.value());
+    if (!itemPk)
+        return {false, false,
+                {Application::ErrorCode::NotFound, "knowledge item not found", {}, false}};
+    // 使用仓储嵌套事务(外层用例可能已开启事务,原生 transaction() 会失败)
+    const auto begun = beginWrite();
+    if (!begun.ok)
+        return begun;
+    const auto fail = [this](const char *operation, const QSqlQuery &query) {
+        rollbackWrite();
+        return writeFailure(operation, query);
+    };
+
+    QVector<qint64> versionIds;
+    {
+        QSqlQuery versions(m_database);
+        versions.prepare(QStringLiteral(
+            "SELECT id FROM knowledge_versions_v5 WHERE knowledge_item_id=?"));
+        versions.addBindValue(*itemPk);
+        if (!versions.exec())
+            return fail("item delete failed", versions);
+        while (versions.next())
+            versionIds.append(versions.value(0).toLongLong());
+    }
+    // 证据链接先摘除(候选通常无,防御性处理避免 FK 阻断)
+    for (const qint64 versionId : versionIds) {
+        QSqlQuery links(m_database);
+        links.prepare(QStringLiteral(
+            "DELETE FROM evidence_links_v5 WHERE knowledge_version_id=?"));
+        links.addBindValue(versionId);
+        if (!links.exec())
+            return fail("evidence link delete failed", links);
+    }
+    // 类型详情(无级联,须先删)
+    for (const char *table :
+         {"papers_v5", "methods_v5", "tips_v5", "plan_templates_v5"}) {
+        QSqlQuery detail(m_database);
+        detail.prepare(QStringLiteral("DELETE FROM %1 WHERE knowledge_item_id=?")
+                           .arg(QLatin1String(table)));
+        detail.addBindValue(*itemPk);
+        if (!detail.exec())
+            return fail("type detail delete failed", detail);
+    }
+    // 知识关系(双向)
+    {
+        QSqlQuery relations(m_database);
+        relations.prepare(QStringLiteral(
+            "DELETE FROM knowledge_relations_v5 WHERE from_item_id=? OR to_item_id=?"));
+        relations.addBindValue(*itemPk);
+        relations.addBindValue(*itemPk);
+        if (!relations.exec())
+            return fail("relation delete failed", relations);
+    }
+    // 版本(方法步骤/适用性表带 ON DELETE CASCADE)
+    {
+        QSqlQuery versions(m_database);
+        versions.prepare(QStringLiteral(
+            "DELETE FROM knowledge_versions_v5 WHERE knowledge_item_id=?"));
+        versions.addBindValue(*itemPk);
+        if (!versions.exec())
+            return fail("version delete failed", versions);
+    }
+    // 条目(分类/标签带 ON DELETE CASCADE)
+    {
+        QSqlQuery item(m_database);
+        item.prepare(QStringLiteral("DELETE FROM knowledge_items_v5 WHERE id=?"));
+        item.addBindValue(*itemPk);
+        if (!item.exec() || item.numRowsAffected() == 0)
+            return fail("item delete failed", item);
+    }
+    const auto committed = commitWrite();
+    if (!committed.ok)
+        return committed;
+    return {true, false, {}};
+}
+
+int SqlKnowledgeRepository::countPapersInDomain(const std::string &domainCode)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM knowledge_items_v5 "
+        "WHERE library_type='paper' AND domain_code=?"));
+    query.addBindValue(QString::fromStdString(domainCode));
+    if (!query.exec() || !query.next())
+        return 0;
+    return query.value(0).toInt();
+}
+
+int SqlKnowledgeRepository::derivedCandidateCount(const Domain::Uid &paperItemUid,
+                                                  Domain::LibraryType type)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM knowledge_items_v5 i "
+        "JOIN knowledge_relations_v5 r ON r.from_item_id=i.id "
+        "WHERE i.library_type=? AND i.created_by='generated' "
+        "AND i.status='candidate' AND r.relation='derived_from' "
+        "AND r.to_item_id=(SELECT id FROM knowledge_items_v5 WHERE uid=?)"));
+    query.addBindValue(QString::fromStdString(Domain::toString(type)));
+    query.addBindValue(QString::fromStdString(paperItemUid.value()));
+    if (!query.exec() || !query.next())
+        return 0;
+    return query.value(0).toInt();
 }
 
 Application::SaveResult SqlKnowledgeRepository::insertFragment(

@@ -239,15 +239,12 @@ int main(int argc, char *argv[])
     // 断点续作：已成功条目按 sha256 跳过
     QJsonObject report = loadReport(options.reportPath);
     QJsonArray results = report.value(QStringLiteral("results")).toArray();
-    QSet<QString> doneHashes;
     QSet<QString> doneSources;
     for (const auto &value : results) {
         const QJsonObject result = value.toObject();
         if (result.value(QStringLiteral("status")).toString()
-            == QStringLiteral("imported")) {
-            doneHashes.insert(result.value(QStringLiteral("sha256")).toString());
+            == QStringLiteral("imported"))
             doneSources.insert(result.value(QStringLiteral("source")).toString());
-        }
     }
 
     Infrastructure::CorpusPipeline pipeline(DatabaseManager::instance().database(), uids,
@@ -372,10 +369,12 @@ int main(int argc, char *argv[])
                 analysis.title = item.title;
                 analysis.extractedText = outcome.extractedText;
                 analysis.modelVersion = analysisConfig->providerCode + ":" + analysisConfig->model;
-                analysis.idempotencyKey = "paper-analysis:" + outcome.sha256 + ":"
-                                          + analysis.modelVersion + ":v1";
+                analysis.idempotencyKey = "paper-analysis:" + outcome.itemUid + ":"
+                                          + outcome.sha256 + ":"
+                                          + analysis.modelVersion + ":v2";
                 analysis.analysisContentHash = QCryptographicHash::hash(
-                    QByteArray::fromStdString(outcome.sha256 + analysis.modelVersion + ":v1"),
+                    QByteArray::fromStdString(outcome.itemUid + outcome.sha256
+                                              + analysis.modelVersion + ":v2"),
                     QCryptographicHash::Sha256).toHex().toStdString();
                 const auto analyzed = analyzer.analyze(analysis);
                 if (analyzed) {

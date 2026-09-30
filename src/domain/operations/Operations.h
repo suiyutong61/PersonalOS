@@ -56,6 +56,7 @@ struct ReminderDelivery
     std::string status = "pending";       // pending/delivered/failed/suppressed/cancelled
     std::optional<std::string> error;
     std::string idempotencyKey;           // UNIQUE（补发不重复，DB-06）
+    int attemptCount = 0;                 // 失败重试计数（达到上限后终态失败，不再重选）
 
     bool isValid() const
     {

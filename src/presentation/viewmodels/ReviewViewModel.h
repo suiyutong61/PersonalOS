@@ -25,6 +25,7 @@ class ReviewViewModel : public QObject
     Q_PROPERTY(QString reviewNextActions READ reviewNextActions WRITE setReviewNextActions
                    NOTIFY reviewChanged)
     Q_PROPERTY(QString reviewState READ reviewState NOTIFY reviewChanged)
+    Q_PROPERTY(QString reviewStateLabel READ reviewStateLabel NOTIFY reviewChanged)
     QML_ELEMENT
 
 public:
@@ -46,6 +47,7 @@ public:
     QString reviewProblems() const { return m_reviewProblems; }
     QString reviewNextActions() const { return m_reviewNextActions; }
     QString reviewState() const { return m_reviewState; }
+    QString reviewStateLabel() const { return m_reviewStateLabel; }
 
     void setReviewSummary(const QString &value);
     void setReviewProblems(const QString &value);
@@ -67,6 +69,7 @@ private:
     QString m_reviewUid;
     QString m_questionnaireUid;
     QString m_reviewState;
+    QString m_reviewStateLabel;
     QString m_reviewSummary;
     QString m_reviewProblems;
     QString m_reviewNextActions;

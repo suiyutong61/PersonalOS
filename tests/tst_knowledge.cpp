@@ -8,14 +8,36 @@
 #include <QSqlError>
 #include <QSqlQuery>
 
+#include "application/ports/EmbeddingPort.h"
 #include "application/usecases/knowledge/KnowledgeUseCases.h"
 #include "database/DatabaseManager.h"
 #include "infrastructure/foundation/QtSystemClock.h"
 #include "infrastructure/foundation/QtUidGenerator.h"
+#include "infrastructure/knowledge/SqlEmbeddingRepository.h"
 #include "infrastructure/knowledge/SqlKnowledgeFtsIndex.h"
 #include "infrastructure/persistence/SqlKnowledgeRepository.h"
 
 using namespace PersonOS;
+
+namespace {
+
+// 记录性替身：返回固定 4 维向量并记录最近一次索引文本
+class RecordingEmbeddingPort : public Application::EmbeddingPort
+{
+public:
+    Application::Result<std::vector<float>, Application::ApplicationError> embed(
+        const std::string &text) override
+    {
+        m_lastText = text;
+        return Application::Result<std::vector<float>, Application::ApplicationError>::success(
+            {0.1f, 0.2f, 0.3f, 0.4f});
+    }
+    int dimension() const override { return 4; }
+    std::string modelId() const override { return "fake"; }
+    std::string m_lastText;
+};
+
+} // namespace
 
 class TstKnowledge : public QObject
 {
@@ -318,6 +340,116 @@ private slots:
                                                     + planImported.error().detail)));
     }
 
+    void importWritesVectorRowWhenPortsInjected()
+    {
+        Infrastructure::SqlKnowledgeRepository repo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlKnowledgeFtsIndex ftsIndex(
+            DatabaseManager::instance().database(), m_clock);
+        Infrastructure::SqlEmbeddingRepository embeddings(
+            DatabaseManager::instance().database());
+        RecordingEmbeddingPort fake;
+        Application::KnowledgeUseCases useCases(repo, ftsIndex, m_uids, m_clock, &fake,
+                                                &embeddings);
+
+        Application::KnowledgeUseCases::ImportInput input;
+        input.libraryType = Domain::LibraryType::Tip;
+        input.title = "Vector indexed tip";
+        input.domainCode = "learning";
+        input.summary = "summary for embedding";
+        input.contentHash = "hash-vector-tip";
+        input.createdBy = "generated";
+        const auto imported = useCases.importKnowledge(input);
+        if (!imported)
+            QFAIL(qPrintable(QString::fromStdString(imported.error().message + ": "
+                                                    + imported.error().detail)));
+        m_vectorTipUid = imported.value().item.uid.value();
+
+        // 索引文本 = 标题 + "\n" + 摘要（文档侧）
+        QCOMPARE(fake.m_lastText, std::string("Vector indexed tip\nsummary for embedding"));
+        // 恰一行：owner/field/model/hash 正确
+        const auto rows = embeddings.allForOwnerType("tip", "fake");
+        QCOMPARE(rows.size(), size_t(1));
+        QCOMPARE(rows[0].ownerUid, m_vectorTipUid);
+        QCOMPARE(rows[0].fieldCode, std::string("main"));
+        QCOMPARE(rows[0].contentHash, std::string("hash-vector-tip"));
+        QCOMPARE(rows[0].dimension, 4);
+    }
+
+    void importWithoutPortsSucceedsWithoutRows()
+    {
+        Infrastructure::SqlKnowledgeRepository repo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlKnowledgeFtsIndex ftsIndex(
+            DatabaseManager::instance().database(), m_clock);
+        // 默认构造（无嵌入端口）：导入照常成功且不写向量行（DR-013 降级）
+        Application::KnowledgeUseCases useCases(repo, ftsIndex, m_uids, m_clock);
+        QSqlQuery count(DatabaseManager::instance().database());
+        QVERIFY(count.exec(QStringLiteral("SELECT COUNT(*) FROM embedding_records_v6")));
+        QVERIFY(count.next());
+        const int before = count.value(0).toInt();
+
+        Application::KnowledgeUseCases::ImportInput input;
+        input.libraryType = Domain::LibraryType::Tip;
+        input.title = "Plain tip without vector";
+        input.domainCode = "learning";
+        input.summary = "no embedding available";
+        input.contentHash = "hash-plain-tip";
+        input.createdBy = "generated";
+        const auto imported = useCases.importKnowledge(input);
+        QVERIFY(imported.hasValue());
+
+        QVERIFY(count.exec(QStringLiteral("SELECT COUNT(*) FROM embedding_records_v6")));
+        QVERIFY(count.next());
+        QCOMPARE(count.value(0).toInt(), before);
+    }
+
+    void addVersionActiveRewritesVectorRow()
+    {
+        Infrastructure::SqlKnowledgeRepository repo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlKnowledgeFtsIndex ftsIndex(
+            DatabaseManager::instance().database(), m_clock);
+        Infrastructure::SqlEmbeddingRepository embeddings(
+            DatabaseManager::instance().database());
+        RecordingEmbeddingPort fake;
+        Application::KnowledgeUseCases useCases(repo, ftsIndex, m_uids, m_clock, &fake,
+                                                &embeddings);
+        const auto itemUid = *Domain::Uid::parse(m_vectorTipUid);
+
+        Application::KnowledgeUseCases::VersionInput v2;
+        v2.summary = "revised summary";
+        v2.contentHash = "hash-vector-tip-v2";
+        v2.isActive = true;
+        const auto added = useCases.addVersion(itemUid, 2, v2);
+        if (!added)
+            QFAIL(qPrintable(QString::fromStdString(added.error().message + ": "
+                                                    + added.error().detail)));
+        // 旧 hash 行被清理：同一 owner 只剩新版本一行
+        const auto rows = embeddings.allForOwnerType("tip", "fake");
+        QCOMPARE(rows.size(), size_t(1));
+        QCOMPARE(rows[0].ownerUid, m_vectorTipUid);
+        QCOMPARE(rows[0].contentHash, std::string("hash-vector-tip-v2"));
+        QCOMPARE(fake.m_lastText, std::string("Vector indexed tip\nrevised summary"));
+    }
+
+    void purgeItemClearsVectorRows()
+    {
+        Infrastructure::SqlKnowledgeRepository repo(DatabaseManager::instance().database(),
+                                                    m_clock);
+        Infrastructure::SqlKnowledgeFtsIndex ftsIndex(
+            DatabaseManager::instance().database(), m_clock);
+        Infrastructure::SqlEmbeddingRepository embeddings(
+            DatabaseManager::instance().database());
+        RecordingEmbeddingPort fake;
+        Application::KnowledgeUseCases useCases(repo, ftsIndex, m_uids, m_clock, &fake,
+                                                &embeddings);
+        const auto purged = useCases.purgeItem(*Domain::Uid::parse(m_vectorTipUid));
+        QVERIFY(purged.hasValue());
+        const auto rows = embeddings.allForOwnerType("tip", "fake");
+        QCOMPARE(rows.size(), size_t(0));
+    }
+
 private:
     static std::string inputSummaryV1()
     {
@@ -326,6 +458,7 @@ private:
 
     QString m_path;
     QString m_paperUid;
+    std::string m_vectorTipUid;
     Infrastructure::QtSystemClock m_clock;
     Infrastructure::QtUidGenerator m_uids;
 };

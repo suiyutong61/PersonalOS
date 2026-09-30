@@ -7,6 +7,9 @@
 #include <QFile>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QtConcurrent/QtConcurrent>
+
+#include <atomic>
 
 #include "application/audit/Audit.h"
 #include "application/usecases/goal/GoalUseCases.h"
@@ -15,6 +18,7 @@
 #include "infrastructure/foundation/QtSystemClock.h"
 #include "infrastructure/foundation/QtUidGenerator.h"
 #include "infrastructure/knowledge/LearningManifestSeed.h"
+#include "infrastructure/persistence/AuditDatabaseSink.h"
 #include "infrastructure/persistence/SqlAuditRepository.h"
 #include "infrastructure/persistence/SqlGoalRepository.h"
 #include "infrastructure/persistence/SqlReviewRepository.h"
@@ -78,6 +82,34 @@ private slots:
                                        .arg(QString::fromLatin1(kMelUid)));
         if (!melOk)
             QFAIL(qPrintable(QStringLiteral("mel insert: %1").arg(mel.lastError().text())));
+    }
+
+    void auditDatabaseSinkWritesFromAnyThread()
+    {
+        // 生产形态：线程感知 sink（每次 append 取当前线程连接）；
+        // 主线程与后台 QtConcurrent 线程各写一条，均须落库
+        static Infrastructure::AuditDatabaseSink sink(
+            DatabaseManager::instance().databasePath());
+        Application::Audit::setSink(&sink);
+
+        QVERIFY(Application::Audit::record(
+                    {"system", {}, "audit.sink_test_main", "audit", "audit-sink-test", "{}"}));
+        std::atomic<bool> workerOk{false};
+        QtConcurrent::run([&]() {
+            const auto result = Application::Audit::record(
+                {"system", {}, "audit.sink_test_worker", "audit", "audit-sink-test", "{}"});
+            workerOk = result.hasValue();
+        }).waitForFinished();
+        QVERIFY(workerOk.load());
+
+        QSqlQuery count(DatabaseManager::instance().database());
+        QVERIFY(count.exec(QStringLiteral(
+            "SELECT COUNT(*) FROM audit_events_v6 WHERE action LIKE 'audit.sink_test_%'")));
+        QVERIFY(count.next());
+        QCOMPARE(count.value(0).toInt(), 2);
+
+        // 恢复无 sink 状态（其他用例自行注册）
+        Application::Audit::setSink(nullptr);
     }
 
     void auditSinkRecordsBusinessChanges()

@@ -1,0 +1,260 @@
+[
+ {
+  "code": "01",
+  "slug": "goal-self-regulation",
+  "title": "01. Goal & Self-Regulation（目标与自我调节）",
+  "keywords": "Goal Setting / Goal Commitment / Goal Hierarchy / Goal Systems / Multiple-Goal Pursuit / Goal Conflict / Goal Facilitation / Self-Regulation / Self-Control / Self-Monitoring / Progress Monitoring / Feedback Loops / Goal Adjustment / Goal Disengagement / Goal Reengagement / Long-term vs Short-term Goals / Intrinsic/Extrinsic Motivation / Self-Efficacy / Expectancy-Value / Personal Values / Identity-Based Goals"
+ },
+ {
+  "code": "02",
+  "slug": "plan-feasibility",
+  "title": "02. Plan Feasibility & Resource Allocation（计划可行性与资源分配）",
+  "keywords": "Time Capacity / Cognitive Capacity / Physical Capacity / Energy Management / Attention Capacity / Resource Allocation / Opportunity Cost / Workload / Task Load / Cognitive Load / Schedule Feasibility / Deadline Pressure / Task Dependencies / Task Switching Cost / Parallel vs Sequential Tasks / Goal Competition / Capacity Planning / Uncertainty / Risk Buffer / Slack (Spare Capacity) / Plan Robustness / Plan Resilience / Scenario Planning / Upper-Bound Constraints / Lower-Bound Constraints / Personal Capacity Estimation / Individual Calibration"
+ },
+ {
+  "code": "03",
+  "slug": "time-management",
+  "title": "03. Time Management & Productivity（时间管理与生产力）",
+  "keywords": "Time Management / Scheduling / Time Blocking / Calendar Management / Task Prioritization / Eisenhower Matrix / Urgent vs Important / Deep Work / Shallow Work / Batching / Context Switching / Task Switching / Planning Fallacy / Time Estimation / Parkinson's Law / Deadline Effects / Temporal Motivation / Pomodoro / Break Scheduling / Daily Planning / Weekly Planning / Monthly Planning / Semester Planning / Long-term Planning / Review & Retrospective > Pomodoro 应定义为 Productivity Intervention / Time Structuring Technique， > 不默认它是被高质量证据证明\"最佳\"的学习方法。"
+ },
+ {
+  "code": "04",
+  "slug": "learning-science",
+  "title": "04. Learning Science（学习科学）",
+  "keywords": "Encoding / Consolidation / Retrieval / Forgetting / Working Memory / Long-Term Memory / Semantic Memory / Procedural Memory"
+ },
+ {
+  "code": "05",
+  "slug": "attention-focus",
+  "title": "05. Attention / Focus / Concentration（注意力与专注）",
+  "keywords": "Selective Attention / Sustained Attention / Divided Attention / Executive Attention / Attentional Control / Distractibility / Attention Residue / Task Switching / Multitasking / Digital Distraction / Notification Effects / Environment Design / Focus Sessions / Deep Work / Mind Wandering / Mindfulness / Flow / Cognitive Fatigue / Mental Fatigue"
+ },
+ {
+  "code": "06",
+  "slug": "sleep",
+  "title": "06. Sleep（睡眠）",
+  "keywords": "Sleep Duration / Sleep Quality / Sleep Consistency / Sleep Timing / Circadian Rhythm / Chronotype / Light Exposure / Morning Light / Evening Light / Sleep Debt / Sleep Regularity / Sleep Environment / Temperature / Noise / Naps / Sleep Pressure / REM Sleep / Slow-Wave Sleep / Memory Consolidation / Sleep and Learning / Sleep and Attention / Sleep and Emotion / Sleep and Physical Recovery / Sleep and Decision-Making / Screen Exposure / Caffeine Timing"
+ },
+ {
+  "code": "07",
+  "slug": "nutrition",
+  "title": "07. Nutrition / Diet（营养与饮食）",
+  "keywords": "Protein / Carbohydrates / Fat / Fiber / Energy Intake / Energy Balance"
+ },
+ {
+  "code": "08",
+  "slug": "exercise",
+  "title": "08. Physical Activity / Exercise（身体活动与运动）",
+  "keywords": "Walking / Brisk Walking / Jogging / Running / Cycling / Swimming / Rowing / Hiking / Dancing / Cardio Machines"
+ },
+ {
+  "code": "09",
+  "slug": "stress-recovery",
+  "title": "09. Stress / Recovery（压力与恢复）",
+  "keywords": "Acute Stress / Chronic Stress / Perceived Stress / Stress Response / HPA Axis / Recovery / Relaxation / Breathing / Progressive Muscle Relaxation / Meditation / Mindfulness / Psychological Detachment / Leisure / Rest / Burnout / Workload-Recovery Balance > 2026 年一项系统评价和 Meta-analysis（17 RCT、1,641 名非临床成年人）： > mindfulness-based interventions 与较低 perceived stress 相关。 > → Mindfulness / Meditation 应进入文献库。"
+ },
+ {
+  "code": "10",
+  "slug": "emotion-regulation",
+  "title": "10. Emotion Regulation（情绪调节）",
+  "keywords": "Emotional Awareness / Emotional Labeling / Cognitive Reappraisal / Acceptance / Suppression / Rumination / Avoidance / Emotional Resilience / Anger Regulation / Anxiety Regulation / Frustration Tolerance / Stress Regulation / Self-Compassion / Emotional Recovery"
+ },
+ {
+  "code": "11",
+  "slug": "motivation",
+  "title": "11. Motivation（动机）",
+  "keywords": "Intrinsic Motivation / Extrinsic Motivation / Self-Determination / Autonomy / Competence / Relatedness / Expectancy / Value / Reward / Incentives / Goal Commitment / Motivation Decay / Motivation Fluctuation / Motivation vs Discipline"
+ },
+ {
+  "code": "12",
+  "slug": "habits",
+  "title": "12. Habits / Behavior Change（习惯与行为改变）",
+  "keywords": "Habit Formation / Habit Strength / Automaticity / Cue / Routine / Reward / Context / Habit Stacking / Environmental Cues / Habit Breaking / Behavior Substitution / Self-Monitoring / Implementation Intentions / Behavioral Activation / Reinforcement / Identity-Based Habits"
+ },
+ {
+  "code": "13",
+  "slug": "procrastination",
+  "title": "13. Procrastination（拖延）",
+  "keywords": "Task Aversion / Delay / Impulsivity / Self-Control / Self-Efficacy / Temporal Discounting / Present Bias / Emotion Regulation / Task Difficulty / Task Ambiguity / Avoidance / Perfectionism / Fear of Failure / Intention-Action Gap"
+ },
+ {
+  "code": "14",
+  "slug": "cognition",
+  "title": "14. Cognition / Cognitive Performance（认知与认知表现）",
+  "keywords": "Working Memory / Long-Term Memory / Processing Speed / Executive Function / Inhibitory Control / Cognitive Flexibility / Planning / Reasoning / Problem Solving / Decision Making / Mental Fatigue / Cognitive Load / Cognitive Reserve / Attention / Metacognition"
+ },
+ {
+  "code": "15",
+  "slug": "decision-making",
+  "title": "15. Decision Making（决策）",
+  "keywords": "Rational Choice / Bounded Rationality / Heuristics / Biases / Expected Utility / Prospect Theory / Risk / Uncertainty / Probability / Bayesian Reasoning / Value of Information / Opportunity Cost / Satisficing / Multi-Criteria Decision Making / Regret / Intertemporal Choice / Delayed Gratification / Reversible vs Irreversible Decisions"
+ },
+ {
+  "code": "16",
+  "slug": "social-relationships",
+  "title": "16. Social / Relationships（社会与关系）",
+  "keywords": "Social Connection / Social Support / Friendship / Family / Romantic Relationships / Social Isolation / Loneliness / Social Belonging / Communication / Conflict Resolution / Cooperation / Reciprocity / Social Influence / Peer Effects / Networking / Community"
+ },
+ {
+  "code": "17",
+  "slug": "environment-design",
+  "title": "17. Environment Design（环境设计）",
+  "keywords": "Physical Environment / Workspace / Lighting / Noise / Temperature / Ergonomics / Desk Setup / Digital Environment / Phone Environment / Browser Environment / Notification Design / Friction / Convenience / Defaults / Choice Architecture / Environmental Cues / Context Switching"
+ },
+ {
+  "code": "18",
+  "slug": "digital-behavior",
+  "title": "18. Digital Behavior（数字行为）",
+  "keywords": "Screen Time / Smartphone Use / Social Media / Short-Form Video / Gaming / Notifications / Doomscrolling / Digital Distraction / Multitasking / Email / Messaging / Information Overload / Algorithmic Feeds / Digital Addiction (Problematic Use) / Attention Capture / Digital Minimalism"
+ },
+ {
+  "code": "19",
+  "slug": "knowledge-management",
+  "title": "19. Knowledge Management（知识管理）",
+  "keywords": "Note-Taking / Knowledge Graphs / Personal Knowledge Management / Second Brain / Information Retrieval / Spaced Review / Knowledge Organization / Taxonomy / Tagging / Linking / Zettelkasten / External Memory / Personal Documentation / Decision Records / Learning Records"
+ },
+ {
+  "code": "20",
+  "slug": "creativity",
+  "title": "20. Creativity & Problem Solving（创造力与问题解决）",
+  "keywords": "Divergent Thinking / Convergent Thinking / Idea Generation / Incubation / Insight / Analogy / Creativity / Creative Constraints / Design Thinking / Problem Decomposition / First Principles / Systems Thinking / Critical Thinking / Lateral Thinking"
+ },
+ {
+  "code": "21",
+  "slug": "personality",
+  "title": "21. Personality / Individual Differences（人格与个体差异）",
+  "keywords": "Big Five / Conscientiousness / Openness / Extraversion / Agreeableness / Neuroticism / Self-Control / Self-Efficacy / Need for Cognition / Motivation Profiles / Learning Preferences / Risk Tolerance / Time Perspective / Personality and Habits / Personality and Goal Pursuit"
+ },
+ {
+  "code": "22",
+  "slug": "well-being",
+  "title": "22. Well-being / Life Satisfaction（幸福感与生活满意度）",
+  "keywords": "Life Satisfaction / Subjective Well-Being / Psychological Well-Being / Positive Affect / Negative Affect / Meaning in Life / Purpose / Flourishing / Eudaimonia / Hedonia / Work-Life Balance / Leisure / Autonomy / Competence / Relatedness"
+ },
+ {
+  "code": "23",
+  "slug": "leisure",
+  "title": "23. Leisure / Recreation（休闲与娱乐）",
+  "keywords": "Active Leisure / Passive Leisure / Hobbies / Outdoor Activities / Entertainment / Social Recreation / Creative Recreation / Recovery Through Leisure / Psychological Detachment / Boredom / Solitude"
+ },
+ {
+  "code": "24",
+  "slug": "personal-finance",
+  "title": "24. Personal Finance / Resource Management（个人财务）",
+  "keywords": "Budgeting / Saving / Spending / Cash Flow / Emergency Fund / Financial Goals / Investment Basics / Risk / Insurance / Opportunity Cost / Consumption Behavior / Delayed Gratification / Financial Decision-Making"
+ },
+ {
+  "code": "25",
+  "slug": "health-monitoring",
+  "title": "25. Health Monitoring（健康监测）",
+  "keywords": "Weight / Body Composition / Resting Heart Rate / Blood Pressure / Activity / Sleep / Energy / Mood / Fatigue / Pain / Recovery / Fitness / Nutrition / Symptoms"
+ },
+ {
+  "code": "26",
+  "slug": "n-of-1",
+  "title": "26. Self-Experimentation / N-of-1（自我实验）",
+  "keywords": "N-of-1 Trials / Personal Experiments / A/B Testing / Baseline / Intervention / Control Period / Crossover Design / Repeated Measures / Within-Person Variability / Individual Treatment Effects / Personal Causal Inference / Experiment Logging / Experiment Stopping Rules"
+ },
+ {
+  "code": "27",
+  "slug": "measurement",
+  "title": "27. Measurement / Quantification（测量与量化）",
+  "keywords": "Measurement Theory / Reliability / Validity / Construct Validity / Ecological Validity / Self-Report / Behavioral Metrics / Objective Metrics / Leading Indicators / Lagging Indicators / Composite Scores / Thresholds / Baselines / Normalization / Personal Baseline / Trend Detection / Anomaly Detection"
+ },
+ {
+  "code": "28",
+  "slug": "statistics",
+  "title": "28. Statistics / Causal Inference（统计与因果推断）",
+  "keywords": "Correlation / Regression / Bayesian Statistics / Causal Inference / Experimental Design / Randomized Controlled Trials / Longitudinal Studies / Time-Series / Within-Person Analysis / Mixed Effects / Confounding / Mediation / Moderation / Effect Size / Confidence Interval / Statistical Power / Measurement Error / Missing Data"
+ },
+ {
+  "code": "29",
+  "slug": "ai-human-ai",
+  "title": "29. AI + Human-AI Interaction（AI 与人机协作）",
+  "keywords": "Human-in-the-Loop / AI Assistance / AI Decision Support / Explainability / Interpretability / AI Recommendations / User Control / Automation / Adaptive Systems / Personalized AI / User Modeling / Longitudinal User Modeling / AI Calibration / AI Uncertainty / AI Hallucination / AI Overreliance / Automation Bias / Human-AI Trust / Agency Preservation"
+ },
+ {
+  "code": "30",
+  "slug": "personalization",
+  "title": "30. Personalization / Adaptive Systems（个性化与自适应系统）",
+  "keywords": "Personalized Recommendation / User Modeling / Adaptive Planning / Individual Differences / Context-Aware Systems / Dynamic Personalization / Personal Baselines / Online Learning / Reinforcement Learning / Adaptive Thresholds / User-Specific Models / Behavioral Prediction"
+ },
+ {
+  "code": "31",
+  "slug": "safety-ethics",
+  "title": "31. Safety / Ethics / Privacy（安全、伦理与隐私）",
+  "keywords": "Health Data Privacy / Personal Data Protection / Data Minimization / Local-First / Security / Encryption / Consent / Data Ownership / AI Safety / Human Agency / Automation Risk / Psychological Dependency / Manipulation / Behavioral Nudging / Informed Consent / Explainability / Auditability"
+ },
+ {
+  "code": "32",
+  "slug": "systems-engineering",
+  "title": "32. Systems Engineering / Personal OS 本身（系统工程）",
+  "keywords": "Systems Thinking / Systems Engineering / Requirements Engineering / Domain Modeling / Architecture / Modular Design / Feedback Control / State Machines / Decision Systems / Event-Driven Architecture / Rule Engines / Constraint Solving / Optimization / Simulation / Digital Twin / Knowledge Representation / Versioning / Traceability / Evaluation / Continuous Improvement / Self-Evolving Systems"
+ },
+ {
+  "code": "33",
+  "slug": "career-work",
+  "title": "33. Career, Work & Vocational Development（职业、工作与生涯发展）",
+  "keywords": "Career Exploration / Vocational Interests / Career Choice / Person-Job Fit / Person-Organization Fit / Employability / Career Capital / Skill Portfolio / Transferable Skills / Professional Identity / Work Design / Job Crafting / Job Satisfaction / Work Engagement / Meaningful Work / Workload and Job Demands / Job Resources / Occupational Stress / Burnout Prevention / Career Plateau / Career Transition / Job Search / Interviewing / Mentoring / Professional Networking / Leadership Development / Teamwork / Remote/Hybrid Work / Work-Life Boundaries / Education-to-Work Transition / Lifelong Career Development"
+ },
+ {
+  "code": "34",
+  "slug": "identity-values-meaning",
+  "title": "34. Identity, Values, Meaning & Life Direction（身份、价值、意义与人生方向）",
+  "keywords": "Personal Values / Value Clarification / Self-Concept / Self-Knowledge / Personal Identity / Identity Development / Identity-Based Action / Narrative Identity / Possible Selves / Ideal Self vs Actual Self / Role Identity / Identity Conflict / Value Conflict / Meaning in Life / Purpose in Life / Life Direction / Coherence / Authenticity / Moral Identity / Spirituality / Existential Reflection / Legacy / Personal Philosophy / Life Priorities / Goal-Identity Alignment / Value-Action Consistency"
+ },
+ {
+  "code": "35",
+  "slug": "life-administration",
+  "title": "35. Life Administration & Personal Operations（生活事务与个人运营）",
+  "keywords": "Personal Administration / Appointments / Deadlines / Recurring Responsibilities / Household Management / Chores / Home Maintenance / Personal Documents / Records Management / Identity Documents / Renewals / Subscriptions / Contracts / Bills and Non-Financial Reminders / Forms and Applications / School Administration / Workplace Administration / Travel Planning / Packing and Checklists / Transportation and Commuting / Moving and Relocation / Inventory Management / Purchase and Replacement Cycles / Service Providers / Contact Management / Maintenance Schedules / Personal Information Organization / Life Checklists / Administrative Load / Life Logistics"
+ },
+ {
+  "code": "36",
+  "slug": "life-transitions",
+  "title": "36. Life Transitions, Roles & Caregiving（人生转折、角色与照护责任）",
+  "keywords": "Life Course / Developmental Transitions / Student Role / Worker Role / Partner Role / Parent Role / Family Role / Multiple-Role Management / Role Conflict / Role Overload / Role Enrichment / Starting School / Graduation / Entering Work / Changing Jobs / Unemployment / Retirement / Relocation / Relationship Formation / Relationship Separation / Parenthood / Caregiving / Childcare / Elder Care / Family Responsibility / Illness in the Family / Bereavement / Loss and Grief / Major Life Events / Transition Planning / Adaptation to Change"
+ },
+ {
+  "code": "37",
+  "slug": "accessibility-neurodiversity",
+  "title": "37. Accessibility, Disability & Neurodiversity（可访问性、障碍与神经多样性）",
+  "keywords": "Accessibility / Inclusive Design / Universal Design / Assistive Technology / Visual Accessibility / Hearing Accessibility / Motor Accessibility / Cognitive Accessibility / Learning Differences / Neurodiversity / Attention Differences / Executive Function Differences / Sensory Processing / Communication Differences / Chronic Pain / Chronic Fatigue / Mobility Limitations / Variable Capacity / Energy-Limiting Conditions / Accommodations / Reasonable Adjustments / Accessible Planning / Accessible Learning / Accessible Work / Caregiver-Assisted Use / Stigma / Autonomy / Disability Privacy / Individual Support Needs"
+ },
+ {
+  "code": "38",
+  "slug": "personal-safety",
+  "title": "38. Personal Safety, Preparedness & Life Resilience（个人安全、准备与生活韧性）",
+  "keywords": "Personal Safety / Situational Awareness / Emergency Contacts / Emergency Plans / Disaster Preparedness / Evacuation Planning / First-Aid Preparedness / Travel Safety / Home Safety / Digital Account Recovery / Important Document Backup / Data Backup / Redundancy / Single Points of Failure / Contingency Planning / Continuity Planning / Crisis Communication / Resource Reserves / Recovery Planning / Resilience / Plan Robustness / Service Disruption / Power/Network Outage Preparation / Loss of Device / Loss of Access / Dependency Mapping / Recovery Checklists"
+ },
+ {
+  "code": "39",
+  "slug": "epistemic-health",
+  "title": "39. Epistemic Health & Information Literacy（认知信息健康与信息素养）",
+  "keywords": "Information Literacy / Media Literacy / Scientific Literacy / Statistical Literacy / Source Evaluation / Source Credibility / Evidence Appraisal / Fact Checking / Verification / Primary vs Secondary Sources / Expert Consensus / Uncertainty / Correlation vs Causation / Base Rates / Misleading Statistics / Misinformation / Disinformation / Rumors / Cognitive Biases / Confirmation Bias / Motivated Reasoning / Belief Updating / Intellectual Humility / Epistemic Vigilance / Information Diet / Information Overload / Filter Bubbles / Algorithmic Information Exposure / AI-Generated Content Verification / Claim Provenance"
+ },
+ {
+  "code": "40",
+  "slug": "preventive-health",
+  "title": "40. Preventive Health & Healthcare Navigation（预防性健康与健康服务管理）",
+  "keywords": "Preventive Health Behavior / Routine Checkups / Screening Reminders / Vaccination Records / Dental Care / Vision Care / Hearing Care / Medication Records / Medication Adherence / Allergy Records / Family Health History / Symptom Records / Health Appointments / Preparing for Appointments / Questions for Clinicians / Medical Document Organization / Test Result Records / Care Plans / Follow-Up Reminders / Rehabilitation Adherence / Health Insurance Records / Healthcare Access / Health Communication / Shared Decision-Making / Patient Self-Advocacy / Health Literacy / Risk Communication / When to Seek Professional Help"
+ },
+ {
+  "code": "41",
+  "slug": "substance-use",
+  "title": "41. Substance Use & Addictive Behaviors（物质使用与成瘾性行为）",
+  "keywords": "Caffeine Use / Alcohol Use / Nicotine Use / Tobacco / Vaping / Stimulants / Sedatives / Substance-Related Risk / Dose and Timing / Tolerance / Withdrawal / Craving / Cue Reactivity / Compulsive Behavior / Loss of Control / Behavioral Addictions / Problematic Gaming / Problematic Smartphone Use / Problematic Social Media Use / Gambling Risk / Shopping Compulsion / Pornography Use / Harm Reduction / Trigger Monitoring / Relapse / Lapse vs Relapse / Recovery Support / Social Support / Professional Support"
+ },
+ {
+  "code": "42",
+  "slug": "sexuality-intimacy",
+  "title": "42. Sexuality, Intimacy & Reproductive Well-being（性、亲密关系与生殖福祉）",
+  "keywords": "Sexual Well-being / Sexual Health Literacy / Intimacy / Affection / Consent / Personal Boundaries / Communication About Sex / Relationship Satisfaction / Sexual Satisfaction / Sexual Values / Sexual Identity / Body Image / Reproductive Life Planning / Menstrual Cycle Tracking / Fertility Awareness / Contraception Information / Pregnancy Planning / Pregnancy and Postpartum Transitions / Parenting Intentions / Reproductive Decision-Making / Menopause / Life-Stage Changes / Privacy / Sensitive Data Governance / Professional Care Navigation"
+ },
+ {
+  "code": "43",
+  "slug": "culture-equity",
+  "title": "43. Culture, Socioeconomic Context & Equity（文化、社会经济情境与公平性）",
+  "keywords": "Culture / Cultural Values / Cultural Norms / Language / Multilingual Contexts / Geographic Context / Urban/Rural Context / Climate and Season / Socioeconomic Status / Education Access / Employment Conditions / Housing Conditions / Food Access / Healthcare Access / Technology Access / Time Poverty / Resource Constraints / Social Determinants / Discrimination / Minority Stress / Gender Context / Family Expectations / Community Norms / Cultural Adaptation / Cross-Cultural Psychology / Measurement Invariance / Population Applicability / Representation in Research / Algorithmic Bias / Equity"
+ }
+]

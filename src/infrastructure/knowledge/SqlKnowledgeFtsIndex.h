@@ -24,6 +24,7 @@ public:
     std::vector<Application::SearchHit> search(const std::string &query, int limit) override;
     Application::SaveResult rebuildAll() override;
     bool isConsistent() override;
+    Application::SaveResult removeOwner(const std::string &ownerUid) override;
 
 private:
     QSqlDatabase m_database;

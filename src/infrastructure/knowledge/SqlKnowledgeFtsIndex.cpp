@@ -121,4 +121,16 @@ bool SqlKnowledgeFtsIndex::isConsistent()
     return ftsCount == versionCount.value(0).toLongLong();
 }
 
+Application::SaveResult SqlKnowledgeFtsIndex::removeOwner(const std::string &ownerUid)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM knowledge_fts_v6 WHERE owner_uid=?"));
+    query.addBindValue(QString::fromStdString(ownerUid));
+    if (!query.exec())
+        return {false, false,
+                {Application::ErrorCode::Storage, "fts owner remove failed",
+                 query.lastError().text().toStdString(), false}};
+    return {true, false, {}};
+}
+
 } // namespace PersonOS::Infrastructure

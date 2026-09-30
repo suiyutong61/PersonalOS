@@ -99,9 +99,16 @@ Application::Result<Domain::AiJob, Application::ApplicationError> AiGateway::sub
     if (input.idempotencyKey.empty())
         return Application::Result<Domain::AiJob, Application::ApplicationError>::failure(
             {Application::ErrorCode::Validation, "idempotency key required", {}, false});
-    if (m_repo.existsJobKey(input.idempotencyKey))
+    // 幂等:同键已存在任务时直接复用既有任务(重复提交返回同一结果,
+    // 而不是报错——真实使用中"重复点击"是常态)
+    if (m_repo.existsJobKey(input.idempotencyKey)) {
+        const auto existing = m_repo.findJobByKey(input.idempotencyKey);
+        if (existing)
+            return Application::Result<Domain::AiJob, Application::ApplicationError>::success(
+                *existing);
         return Application::Result<Domain::AiJob, Application::ApplicationError>::failure(
             {Application::ErrorCode::Conflict, "duplicate job idempotency key", {}, false});
+    }
     if (!m_repo.findEnabledConfig(input.providerConfigUid))
         return Application::Result<Domain::AiJob, Application::ApplicationError>::failure(
             {Application::ErrorCode::NotFound, "provider config not found or disabled", {},

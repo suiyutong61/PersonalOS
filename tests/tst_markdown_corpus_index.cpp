@@ -241,12 +241,9 @@ Sources / Intake
         const auto index = MarkdownCorpusIndex::parseDirectory(path);
         QCOMPARE(index.domains.size(), 43);
         QCOMPARE(index.paperCount(), 938);
-        // 07 号文件有两套 7.1–7.10 条目（内容不同但编号相同），应恰好产生
-        // 10 条重复编号警告；其余文件必须零警告。
-        QCOMPARE(index.warnings.size(), 10);
-        for (const auto &warning : index.warnings)
-            QVERIFY2(warning.contains(QStringLiteral("duplicate paper number in domain 7")),
-                     qPrintable(warning));
+        // 07 号文件原有两套 7.1–7.10 重复编号（内容不同），已将第二套改编号
+        // 为 7.41–7.50：全库应零警告，域 7 编号连续。
+        QVERIFY2(index.warnings.isEmpty(), qPrintable(index.warnings.join('\n')));
         for (const auto &domain : index.domains) {
             QVERIFY(domain.number >= 1 && domain.number <= 43);
             QVERIFY(!domain.code.isEmpty());
@@ -278,6 +275,21 @@ Sources / Intake
             QCOMPARE(domain03->papers.at(i).paperNumber, QStringLiteral("3.%1").arg(i + 1));
         for (int i = 0; i < domain04->papers.size(); ++i)
             QCOMPARE(domain04->papers.at(i).paperNumber, QStringLiteral("4.%1").arg(i + 1));
+        // 07 号第二套改编号后:50 条、编号集合恰好为 7.1–7.50 且无重复
+        // (文件中第二套位于第三套之前,故断言编号集合而非文件序连续)
+        const auto domain07 = std::find_if(index.domains.cbegin(), index.domains.cend(),
+                                           [](const auto &d) { return d.number == 7; });
+        QVERIFY(domain07 != index.domains.cend());
+        QCOMPARE(domain07->papers.size(), 50);
+        QStringList numbers07;
+        for (const auto &paper : domain07->papers)
+            numbers07.append(paper.paperNumber);
+        std::sort(numbers07.begin(), numbers07.end(),
+                  [](const QString &a, const QString &b) {
+                      return a.mid(2).toInt() < b.mid(2).toInt();
+                  });
+        for (int i = 0; i < numbers07.size(); ++i)
+            QCOMPARE(numbers07.at(i), QStringLiteral("7.%1").arg(i + 1));
     }
 };
 

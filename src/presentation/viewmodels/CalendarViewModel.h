@@ -17,6 +17,7 @@ class CalendarViewModel : public QObject
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(ListItemModel *remindersModel READ remindersModel CONSTANT)
     Q_PROPERTY(ListItemModel *dueModel READ dueModel CONSTANT)
+    Q_PROPERTY(ListItemModel *deliveriesModel READ deliveriesModel CONSTANT)
     QML_ELEMENT
 
 public:
@@ -28,6 +29,7 @@ public:
     QString lastError() const { return m_lastError; }
     ListItemModel *remindersModel() { return &m_remindersModel; }
     ListItemModel *dueModel() { return &m_dueModel; }
+    ListItemModel *deliveriesModel() { return &m_deliveriesModel; }
 
 signals:
     void pageStateChanged();
@@ -41,6 +43,7 @@ private:
     QString m_lastError;
     ListItemModel m_remindersModel;
     ListItemModel m_dueModel;
+    ListItemModel m_deliveriesModel;
 };
 
 } // namespace PersonOS

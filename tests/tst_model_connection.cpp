@@ -87,6 +87,42 @@ private slots:
         QVERIFY(!repo.latestConnectionTest(config.uid)->overallOk);
     }
 
+    void probesEmbeddingEvenWhenConfigDoesNotDeclare()
+    {
+        // 探测诚实性：config 未声明 embedding 时，只要提供了 embedding
+        // 端口就真实探测（此前依赖 config 声明，生产配置恒 {"text":true}
+        // 导致从未探测却把 embedding:true 记入测试事实）
+        Infrastructure::SqlAiRepository repo(DatabaseManager::instance().database(), m_clock);
+        Domain::AiProviderConfig config;
+        config.uid = m_uids.next();
+        config.providerCode = "openai_compatible";
+        config.displayName = "Undeclared";
+        config.endpoint = "https://example.invalid/v1";
+        config.model = "model-undeclared";
+        config.credentialRef = "credential-ref";
+        config.capabilitiesJson = "{\"text\":true}";   // 生产默认形态
+        config.enabled = false;
+        QVERIFY(repo.insertConfig(config).ok);
+
+        ProbeProvider provider;
+        Infrastructure::ModelConnectionTestService service(repo, provider, &provider,
+                                                            m_uids, m_clock);
+        const auto passed = service.test(config.uid);
+        QVERIFY(passed.hasValue());
+        QVERIFY(passed.value().embeddingRequired);   // 端口存在即探测
+        QVERIFY(passed.value().overallOk);
+        QVERIFY(passed.value().embeddingOk);
+        QVERIFY(passed.value().capabilitiesJson.find("\"embedding\":true")
+                != std::string::npos);
+        // embedding 探针失败必须拉低 overallOk
+        provider.embeddingOk = false;
+        const auto failed = service.test(config.uid);
+        QVERIFY(failed.hasValue());
+        QVERIFY(!failed.value().overallOk);
+        QVERIFY(failed.value().capabilitiesJson.find("\"embedding\":false")
+                != std::string::npos);
+    }
+
     void rejectsDuplicateProviderModelConfig()
     {
         Infrastructure::SqlAiRepository repo(DatabaseManager::instance().database(), m_clock);

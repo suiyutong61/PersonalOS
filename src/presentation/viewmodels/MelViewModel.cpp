@@ -6,13 +6,16 @@
 
 #include "application/usecases/mel/MelUseCases.h"
 #include "application/usecases/planning/AiPlanningUseCases.h"
+#include "application/usecases/review/ReviewUseCases.h"
 #include "database/DatabaseManager.h"
+#include "infrastructure/ai/SqlAiRepository.h"
 #include "infrastructure/persistence/DatabaseConnectionFactory.h"
 #include "presentation/viewmodels/AiServices.h"
 #include "domain/foundation/Uid.h"
 #include "infrastructure/foundation/QtSystemClock.h"
 #include "infrastructure/foundation/QtUidGenerator.h"
 #include "infrastructure/persistence/SqlMelRepository.h"
+#include "infrastructure/persistence/SqlReviewRepository.h"
 #include "presentation/viewmodels/VmSupport.h"
 
 namespace PersonOS {
@@ -24,7 +27,7 @@ QVariantMap taskRow(const QString &uid, const QString &title, double progress, b
 {
     return {{QStringLiteral("uid"), uid},
             {QStringLiteral("title"), title},
-            {QStringLiteral("subtitle"), state},
+            {QStringLiteral("subtitle"), Presentation::melTaskStateLabel(state)},
             {QStringLiteral("badge"), PersonOS::Presentation::percentText(progress)},
             {QStringLiteral("badgeTone"), progress >= 1.0 ? QStringLiteral("success")
                                                           : QStringLiteral("info")},
@@ -72,6 +75,7 @@ void MelViewModel::refresh()
         m_melUid.clear();
         m_melTitle.clear();
         m_melState.clear();
+        m_melStateLabel.clear();
         m_melDeadline.clear();
         m_melProgress.clear();
         setState(QStringLiteral("empty"));
@@ -83,6 +87,7 @@ void MelViewModel::refresh()
     m_melUid = QString::fromStdString(mel.uid.value());
     m_melTitle = QString::fromStdString(mel.title);
     m_melState = QString::fromStdString(Domain::toString(mel.state));
+    m_melStateLabel = Presentation::melStateLabel(m_melState);
     m_melDeadline = QString::fromStdString(mel.plannedEndAt);
     m_melRevision = mel.revision;
 
@@ -179,6 +184,15 @@ void MelViewModel::settle()
         setError(Presentation::friendlyError(settled.error().message, settled.error().detail));
         return;
     }
+    // 结算时开启复盘(R3 闭环:复盘页此前是死路——全系统无人调用
+    // openReview)。每个 MEL 至多一个复盘(UNIQUE 兜底),失败不阻断结算。
+    {
+        Infrastructure::SqlReviewRepository reviewRepo(database, clock);
+        Application::ReviewUseCases reviewUseCases(reviewRepo, uids, clock);
+        if (!reviewUseCases.openReview(*parsed))
+            qWarning("结算后开启复盘失败(下次结算重试): mel=%s",
+                     m_melUid.toStdString().c_str());
+    }
     refresh();
 }
 
@@ -220,9 +234,20 @@ void MelViewModel::runAi(const QString &purpose, const QString &jobType)
     const auto melUid = Domain::Uid::parse(m_melUid.toStdString());
     const auto userUid = Presentation::activeUserUid(DatabaseManager::instance().database());
     if (!userUid) {
-        setState(QStringLiteral("empty"));
+        // error 状态才能让 StateViews 渲染错误横幅(empty 下错误不可见)
+        setState(QStringLiteral("error"));
         setError(QStringLiteral("缺少用户档案"));
         return;
+    }
+    // 诚实降级预检:未配置可用模型直接给出可行动指引(不进入后台管线)
+    {
+        Infrastructure::QtSystemClock clock;
+        Infrastructure::SqlAiRepository aiRepo(DatabaseManager::instance().database(), clock);
+        if (!aiRepo.findFirstEnabledConfig()) {
+            setState(QStringLiteral("offline"));
+            setError(QStringLiteral("未配置可用的模型连接：请到设置页添加、测试并启用连接"));
+            return;
+        }
     }
     m_aiState = QStringLiteral("ai_waiting");
     emit aiStateChanged();
@@ -256,13 +281,19 @@ void MelViewModel::runAi(const QString &purpose, const QString &jobType)
             if (!bound)
                 error = Presentation::friendlyError(bound.error().message,
                                                     bound.error().detail);
+            else if (bound.value() == 0)
+                // 无召回/全部候选被拒:明确提示,不再"什么都没发生"
+                error = QStringLiteral("OK0:AI 未绑定任何方法：检索无召回或全部候选被硬约束拒绝");
         } else {
             error = QStringLiteral("当前没有可关联方法的 MEL");
         }
         Infrastructure::DatabaseConnectionFactory::closeCurrentThreadConnection(purpose);
         return error;
     }).then([this](QString error) {
-        if (error.isEmpty()) {
+        if (error.startsWith(QStringLiteral("OK0:"))) {
+            setState(QStringLiteral("conflict"));
+            setError(error.mid(4));
+        } else if (error.isEmpty()) {
             refresh();
         } else {
             setState(QStringLiteral("error"));

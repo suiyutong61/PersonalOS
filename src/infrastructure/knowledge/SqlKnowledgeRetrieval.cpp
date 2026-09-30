@@ -8,6 +8,8 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <utility>
@@ -64,20 +66,26 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
         "WHERE knowledge_fts_v6 MATCH ? "
         "AND i.status IN ('active','warned','candidate') ");
     if (!libraryType.isEmpty())
-        sql += QStringLiteral("AND f.owner_type = '%1' ").arg(libraryType);
+        sql += QStringLiteral("AND f.owner_type = ? ");
     if (!domainCode.isEmpty())
-        sql += QStringLiteral("AND i.domain_code = '%1' ").arg(domainCode);
+        sql += QStringLiteral("AND i.domain_code = ? ");
     sql += QStringLiteral("ORDER BY lex LIMIT 50");
 
     QSqlQuery search(m_database);
     search.prepare(sql);
     search.addBindValue(QString::fromStdString(Cjk::expandForQuery(request.queryText)));
+    // 过滤值走绑定参数(公开端口 filtersJson 未来可能携带用户输入)
+    if (!libraryType.isEmpty())
+        search.addBindValue(libraryType);
+    if (!domainCode.isEmpty())
+        search.addBindValue(domainCode);
     if (!search.exec())
         return Application::Result<Application::RetrievalOutput, Application::ApplicationError>::
             failure({Application::ErrorCode::Storage, "fts search failed",
                      search.lastError().text().toStdString(), false});
 
-    // bm25 分数越小越相关：归一化 final = 1/(1+bm25)；按 owner 去重（主键要求）
+    // FTS5 bm25() 返回带负号分数（越小越相关）：sigmoid 映射到 (0,1)，
+    // 与向量余弦（[0,1]）同量纲，供跨通道融合与重排比较
     Application::RetrievalOutput output;
     std::set<std::pair<std::string, std::string>> seen;
     std::vector<Domain::RetrievalHit> lexicalHits;
@@ -91,7 +99,7 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
         hit.ownerUid = ownerUid;
         const double bm25 = search.value(4).toDouble();
         hit.lexicalScore = bm25;
-        hit.finalScore = 1.0 / (1.0 + (bm25 < 0 ? 0.0 : bm25));
+        hit.finalScore = 1.0 / (1.0 + std::exp(bm25));
         hit.reasonJson =
             QStringLiteral("{\"route\":\"fts_lexical\",\"bm25\":%1}")
                 .arg(bm25)
@@ -99,14 +107,40 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
         lexicalHits.push_back(std::move(hit));
     }
 
-    // 向量语义召回（可选通道）：查询向量与索引向量余弦；词法未命中的 owner
-    // 以向量分进入候选（DR-013：语义召回与词法互补，任一路不能单独决定）
+    // 向量语义召回（可选通道）：查询向量与同模型索引向量余弦；词法未命中的
+    // owner 以向量分进入候选（DR-013：语义召回与词法互补，任一路不能单独决定）
     std::map<std::pair<std::string, std::string>, float> vectorScores;
-    if (m_embeddings) {
+    if (m_embeddings && m_embeddings->dimension() > 0 && !m_embeddings->modelId().empty()) {
         const auto queryVector = m_embeddings->embed(request.queryText);
         if (queryVector) {
+            // 结构化条件与词法路径一致：向量行只允许命中同状态/同过滤的条目
+            // （'domain' 行为领域分类专用，不参与知识检索）
+            std::set<std::pair<std::string, std::string>> eligible;
+            QString eligibleSql = QStringLiteral(
+                "SELECT library_type, uid FROM knowledge_items_v5 "
+                "WHERE status IN ('active','warned','candidate') ");
+            if (!libraryType.isEmpty())
+                eligibleSql += QStringLiteral("AND library_type = ? ");
+            if (!domainCode.isEmpty())
+                eligibleSql += QStringLiteral("AND domain_code = ? ");
+            QSqlQuery eligibleQuery(m_database);
+            eligibleQuery.prepare(eligibleSql);
+            if (!libraryType.isEmpty())
+                eligibleQuery.addBindValue(libraryType);
+            if (!domainCode.isEmpty())
+                eligibleQuery.addBindValue(domainCode);
+            if (eligibleQuery.exec()) {
+                while (eligibleQuery.next())
+                    eligible.insert({eligibleQuery.value(0).toString().toStdString(),
+                                     eligibleQuery.value(1).toString().toStdString()});
+            }
+            // 只与当前注入模型的向量空间计算余弦（不同模型空间混算无意义）
             SqlEmbeddingRepository embeddings(m_database);
-            for (const auto &row : embeddings.all()) {
+            for (const auto &row : embeddings.allForModel(m_embeddings->modelId())) {
+                if (row.ownerType == "domain")
+                    continue;
+                if (!eligible.count({row.ownerType, row.ownerUid}))
+                    continue;
                 const float score = cosineSimilarity(row.vector, queryVector.value());
                 if (score <= 0.0f)
                     continue;
@@ -118,7 +152,10 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
         }
     }
 
-    int rank = 1;
+    // 融合：词法命中并入语义分（取较大者），词法未命中的语义命中追加为
+    // vector_only 候选；跨通道重排后再统一赋 rank 落库
+    std::vector<Domain::RetrievalHit> hits;
+    hits.reserve(lexicalHits.size() + vectorScores.size());
     for (auto &hit : lexicalHits) {
         const auto key = std::make_pair(hit.ownerType, hit.ownerUid);
         const auto vector = vectorScores.find(key);
@@ -133,6 +170,31 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
                     .arg(*hit.vectorScore)
                     .toStdString();
         }
+        hits.push_back(std::move(hit));
+    }
+    for (const auto &entry : vectorScores) {
+        if (seen.count(entry.first))
+            continue;
+        Domain::RetrievalHit hit;
+        hit.ownerType = entry.first.first;
+        hit.ownerUid = entry.first.second;
+        hit.vectorScore = entry.second;
+        hit.finalScore = entry.second;
+        hit.reasonJson = QStringLiteral("{\"route\":\"vector_only\",\"cosine\":%1}")
+                             .arg(entry.second)
+                             .toStdString();
+        hits.push_back(std::move(hit));
+    }
+
+    // 跨通道重排：finalScore 降序（稳定排序保持词法通道内 bm25 序；纯词法
+    // 查询时与原有顺序一致，无回归）
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const Domain::RetrievalHit &a, const Domain::RetrievalHit &b) {
+                         return a.finalScore > b.finalScore;
+                     });
+
+    int rank = 1;
+    for (auto &hit : hits) {
         hit.rank = rank;
         QSqlQuery insertHit(m_database);
         insertHit.prepare(QStringLiteral(
@@ -150,40 +212,6 @@ SqlKnowledgeRetrieval::retrieve(const Application::RetrievalRequest &request)
             return Application::Result<Application::RetrievalOutput,
                                        Application::ApplicationError>::
                 failure({Application::ErrorCode::Storage, "retrieval hit insert failed",
-                         insertHit.lastError().text().toStdString(), false});
-        output.hits.push_back(std::move(hit));
-        ++rank;
-    }
-
-    // 向量独有命中（词法未召回但语义相近）：追加候选并落库
-    for (const auto &entry : vectorScores) {
-        if (seen.count(entry.first))
-            continue;
-        Domain::RetrievalHit hit;
-        hit.ownerType = entry.first.first;
-        hit.ownerUid = entry.first.second;
-        hit.vectorScore = entry.second;
-        hit.finalScore = entry.second;
-        hit.rank = rank;
-        hit.reasonJson = QStringLiteral("{\"route\":\"vector_only\",\"cosine\":%1}")
-                             .arg(entry.second)
-                             .toStdString();
-        QSqlQuery insertHit(m_database);
-        insertHit.prepare(QStringLiteral(
-            "INSERT INTO retrieval_hits_v6(run_id, owner_type, owner_uid, lexical_score, "
-            "vector_score, final_score, rank, reason_json) VALUES(?,?,?,?,?,?,?,?)"));
-        insertHit.addBindValue(runPk);
-        insertHit.addBindValue(QString::fromStdString(hit.ownerType));
-        insertHit.addBindValue(QString::fromStdString(hit.ownerUid));
-        insertHit.addBindValue(0.0);
-        insertHit.addBindValue(*hit.vectorScore);
-        insertHit.addBindValue(hit.finalScore);
-        insertHit.addBindValue(rank);
-        insertHit.addBindValue(QString::fromStdString(hit.reasonJson));
-        if (!insertHit.exec())
-            return Application::Result<Application::RetrievalOutput,
-                                       Application::ApplicationError>::
-                failure({Application::ErrorCode::Storage, "vector hit insert failed",
                          insertHit.lastError().text().toStdString(), false});
         output.hits.push_back(std::move(hit));
         ++rank;

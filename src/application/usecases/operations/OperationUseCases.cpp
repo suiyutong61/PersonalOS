@@ -3,19 +3,71 @@
 #include "application/audit/Audit.h"
 
 #include <QCryptographicHash>
-#include <QUuid>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSqlQuery>
+#include <QTime>
+#include <QUuid>
 
 namespace PersonOS::Application {
 
 // ---------------------------------------------------------------- Reminder
 
-ReminderService::ReminderService(ReminderRepositoryPort &repo,
+namespace {
+
+// UTC ISO-8601 减 N 分钟（解析失败返回 nullopt，调用方跳过该规则不猜测）
+std::optional<std::string> isoMinusMinutes(const std::string &isoUtc, int minutes)
+{
+    const QDateTime parsed = QDateTime::fromString(QString::fromStdString(isoUtc),
+                                                   Qt::ISODate);
+    if (!parsed.isValid())
+        return std::nullopt;
+    return parsed.addSecs(-minutes * 60).toString(Qt::ISODate).toStdString();
+}
+
+// 静默时段判定（{"start":"HH:mm","end":"HH:mm"}，本地时区；start>end 表示跨午夜）
+bool inQuietHours(const std::string &quietHoursJson, const QTime &localNow)
+{
+    const QJsonObject object =
+        QJsonDocument::fromJson(QByteArray::fromStdString(quietHoursJson)).object();
+    const QTime start = QTime::fromString(object.value(QStringLiteral("start")).toString(),
+                                          QStringLiteral("HH:mm"));
+    const QTime end = QTime::fromString(object.value(QStringLiteral("end")).toString(),
+                                        QStringLiteral("HH:mm"));
+    if (!start.isValid() || !end.isValid() || start == end)
+        return false;
+    if (start < end)
+        return localNow >= start && localNow < end;
+    return localNow >= start || localNow < end;   // 跨午夜窗口
+}
+
+// 提醒对象仅限"开放中"的 MEL：未确认/草稿/已关闭/已取消/已执行完成的
+// MEL 不投递（提前完成的 MEL 不应在 Deadline 时打扰用户）
+bool melOpenForReminder(const Domain::Mel &mel)
+{
+    if (!mel.confirmedAt)
+        return false;
+    switch (mel.state) {
+    case Domain::MelState::Draft:
+    case Domain::MelState::AwaitingConfirmation:
+    case Domain::MelState::ExecutionComplete:
+    case Domain::MelState::Closed:
+    case Domain::MelState::Cancelled:
+        return false;
+    default:
+        return true;
+    }
+}
+
+} // namespace
+
+ReminderService::ReminderService(ReminderRepositoryPort &repo, MelRepository &mels,
                                  NotificationPort &notifications, UuidPort &uids,
                                  const Domain::Clock &clock)
-    : m_repo(repo), m_notifications(notifications), m_uids(uids), m_clock(clock)
+    : m_repo(repo), m_mels(mels), m_notifications(notifications), m_uids(uids), m_clock(clock)
 {}
 
 Result<Domain::ReminderRule, ApplicationError> ReminderService::createRule(
@@ -50,18 +102,55 @@ Result<Domain::ReminderRule, ApplicationError> ReminderService::disableRule(
     return Result<Domain::ReminderRule, ApplicationError>::success(std::move(updated));
 }
 
+Result<int, ApplicationError> ReminderService::ensureMelDeadlineReminders(
+    const Domain::Uid &userId, int limit)
+{
+    int created = 0;
+    for (const auto &mel : m_mels.findActive(userId, limit)) {
+        // 已有规则（含停用）视为用户已决定，不自动重建
+        if (!m_repo.rulesForOwner("mel", mel.uid.value()).empty())
+            continue;
+        RuleInput input;
+        input.ownerType = "mel";
+        input.ownerUid = mel.uid.value();
+        input.offsetMin = 0;
+        input.channel = "app";
+        const auto rule = createRule(input);
+        if (!rule)
+            return Result<int, ApplicationError>::failure(rule.error());
+        ++created;
+    }
+    return Result<int, ApplicationError>::success(created);
+}
+
 Result<int, ApplicationError> ReminderService::scheduleDue(const std::string &triggerAtIso)
 {
     int created = 0;
     for (const auto &rule : m_repo.enabledRules()) {
-        // 幂等键 = rule uid + 触发时刻；同一次启动补发不会重复（DB-06）
-        const std::string key = "reminder:" + rule.uid.value() + ":" + triggerAtIso;
+        // v1 只调度绑定 MEL 的规则；其余类型如实跳过（不猜测到期时刻）
+        if (rule.ownerType != "mel")
+            continue;
+        const auto melUid = Domain::Uid::parse(rule.ownerUid);
+        if (!melUid)
+            continue;
+        const auto mel = m_mels.findByUid(*melUid);
+        if (!mel || !melOpenForReminder(*mel))
+            continue;
+        // 到期时刻 = Deadline − 提前量（解析失败跳过，不猜测）
+        const auto dueAt = isoMinusMinutes(mel->plannedEndAt, rule.offsetMin);
+        if (!dueAt)
+            continue;
+        if (*dueAt > triggerAtIso)
+            continue;   // 未到期
+        // 幂等键 = rule uid + 到期时刻：同一次到期只产生一批投递，
+        // 重启补发与新到期自然区分（DB-06）
+        const std::string key = "reminder:" + rule.uid.value() + ":" + *dueAt;
         if (m_repo.existsDeliveryKey(key))
             continue;
         Domain::ReminderDelivery delivery;
         delivery.uid = m_uids.next();
         delivery.ruleUid = rule.uid;
-        delivery.scheduledAt = triggerAtIso;
+        delivery.scheduledAt = *dueAt;
         delivery.idempotencyKey = key;
         const auto saved = m_repo.insertDelivery(delivery);
         if (!saved.ok)
@@ -74,8 +163,35 @@ Result<int, ApplicationError> ReminderService::scheduleDue(const std::string &tr
 Result<int, ApplicationError> ReminderService::dispatchPending()
 {
     int delivered = 0;
-    for (const auto &pending : m_repo.pendingDeliveries(m_clock.utcIso())) {
-        const bool ok = m_notifications.deliver("Personal OS 提醒", "您有到期的提醒事项");
+    const std::string nowIso = m_clock.utcIso();
+    for (const auto &pending : m_repo.pendingDeliveries(nowIso)) {
+        const auto rule = m_repo.findRule(pending.ruleUid);
+        // 静默时段：如实记 suppressed（不打扰用户，也不伪装成功）
+        if (rule && inQuietHours(rule->quietHoursJson,
+                                 QDateTime::currentDateTime().time())) {
+            const auto suppressed = m_repo.markDelivery(
+                pending.uid, "suppressed", std::string("quiet hours"));
+            if (!suppressed.ok)
+                return Result<int, ApplicationError>::failure(suppressed.error);
+            continue;
+        }
+
+        // 通知内容：绑定 MEL 时给出具体事项（不绑定则保持通用文案）
+        std::string title = "Personal OS 提醒";
+        std::string body = "您有到期的提醒事项";
+        if (rule && rule->ownerType == "mel") {
+            if (const auto melUid = Domain::Uid::parse(rule->ownerUid))
+                if (const auto mel = m_mels.findByUid(*melUid)) {
+                    title = "Personal OS 提醒";
+                    body = "「" + mel->title + "」"
+                           + (rule->offsetMin > 0
+                                  ? " 距 Deadline 还有 " + std::to_string(rule->offsetMin)
+                                        + " 分钟"
+                                  : " 已到 Deadline");
+                }
+        }
+
+        const bool ok = m_notifications.deliver(title, body);
         const auto marked = m_repo.markDelivery(
             pending.uid, ok ? "delivered" : "failed",
             ok ? std::optional<std::string>() : std::string("notification failed"));
@@ -202,7 +318,7 @@ RestoreService::RestoreService(BackupRepositoryPort &repo, DatabaseSwitchPort &s
 {}
 
 Result<RestoreService::RestoreReport, ApplicationError> RestoreService::restore(
-    const Domain::Uid &backupUid)
+    const Domain::Uid &backupUid, int supportedSchemaVersion)
 {
     RestoreReport report;
 
@@ -262,7 +378,9 @@ Result<RestoreService::RestoreReport, ApplicationError> RestoreService::restore(
             if (!okRow)
                 return Result<RestoreReport, ApplicationError>::failure(
                     {ErrorCode::Storage, "backup integrity check failed", {}, false});
-            if (backupSchema > 6)   // v6 = 当前支持的最高 schema（数据库设计 §7）
+            // 与调用方传入的当前支持版本比较(此前硬编码 v6,应用升到 v9 后
+            // 会错误拒绝所有新版备份——真机隐患排查发现)
+            if (backupSchema > supportedSchemaVersion)
                 return Result<RestoreReport, ApplicationError>::failure(
                     {ErrorCode::Conflict,
                      "backup schema newer than this app version supports", {}, false});
@@ -283,8 +401,10 @@ Result<RestoreService::RestoreReport, ApplicationError> RestoreService::restore(
 }
 
 StartupRecovery::StartupRecovery(MelRepository &mels, MelUseCases &melUseCases,
-                                 ReminderService &reminders, const Domain::Clock &clock)
-    : m_mels(mels), m_melUseCases(melUseCases), m_reminders(reminders), m_clock(clock)
+                                 ReminderService &reminders, const Domain::Uid &userId,
+                                 const Domain::Clock &clock)
+    : m_mels(mels), m_melUseCases(melUseCases), m_reminders(reminders), m_userId(userId),
+      m_clock(clock)
 {}
 
 Result<StartupRecovery::Report, ApplicationError> StartupRecovery::run()
@@ -301,8 +421,16 @@ Result<StartupRecovery::Report, ApplicationError> StartupRecovery::run()
         if (settled)
             ++report.settled;
     }
-    // 提醒补发（幂等键保证不重复）
-    m_reminders.scheduleDue(m_clock.utcIso());
+    // 结算后再建默认规则（已结算的 MEL 不再自动建规则）；
+    // 随后补发到期投递（幂等键保证同一次到期不重复）
+    const auto ensured = m_reminders.ensureMelDeadlineReminders(m_userId, 100);
+    if (!ensured)
+        return Result<Report, ApplicationError>::failure(ensured.error());
+    report.remindersCreated = ensured.value();
+    const auto scheduled = m_reminders.scheduleDue(m_clock.utcIso());
+    if (!scheduled)
+        return Result<Report, ApplicationError>::failure(scheduled.error());
+    report.remindersScheduled = scheduled.value();
     return Result<Report, ApplicationError>::success(report);
 }
 

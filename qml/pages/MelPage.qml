@@ -12,6 +12,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: ThemeTokens.spacingLg
@@ -47,7 +50,8 @@ Item {
 
         ColumnLayout {
             Layout.fillWidth: true
-            visible: vm.pageState === "ready"
+            visible: vm.pageState === "ready" || vm.pageState === "conflict"
+                || vm.pageState === "error" || vm.pageState === "offline"
             spacing: ThemeTokens.spacingSm
 
             Card {
@@ -66,7 +70,7 @@ Item {
                             color: ThemeTokens.textPrimary
                         }
                         StatusBadge {
-                            text: vm.melState
+                            text: vm.melStateLabel
                             tone: vm.melState === "active" ? "success" : "neutral"
                         }
                     }

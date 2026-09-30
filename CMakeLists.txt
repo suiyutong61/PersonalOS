@@ -19,6 +19,7 @@ add_library(personos_domain STATIC
     src/domain/foundation/Uid.h
     src/domain/goal/Goal.h
     src/domain/route/Route.h
+    src/domain/route/StageDetail.h
     src/domain/mel/Mel.h
     src/domain/review/Review.h
     src/domain/state/State.h
@@ -53,6 +54,8 @@ target_sources(personos_application INTERFACE
     src/application/usecases/goal/GoalUseCases.cpp
     src/application/usecases/route/RouteUseCases.h
     src/application/usecases/route/RouteUseCases.cpp
+    src/application/usecases/route/RouteStageDetailUseCases.h
+    src/application/usecases/route/RouteStageDetailUseCases.cpp
     src/application/usecases/mel/MelUseCases.h
     src/application/usecases/mel/MelUseCases.cpp
     src/application/ports/MelRepository.h
@@ -89,6 +92,7 @@ target_sources(personos_application INTERFACE
     src/application/usecases/domain/DecisionValidator.cpp
     src/application/ports/DomainManifestRepository.h
     src/application/ports/EmbeddingPort.h
+    src/application/ports/EmbeddingVectorStore.h
     src/application/usecases/planning/AiPlanningUseCases.h
     src/application/usecases/planning/AiPlanningUseCases.cpp
     src/application/usecases/migration/LegacyMigration.h
@@ -125,6 +129,12 @@ add_library(personos_infrastructure STATIC
     src/infrastructure/foundation/QtUidGenerator.h
     src/infrastructure/foundation/TimeFormat.cpp
     src/infrastructure/foundation/TimeFormat.h
+    src/infrastructure/embedding/SentencePieceUnigram.cpp
+    src/infrastructure/embedding/SentencePieceUnigram.h
+    src/infrastructure/embedding/LocalEmbeddingProvider.cpp
+    src/infrastructure/embedding/LocalEmbeddingProvider.h
+    src/infrastructure/embedding/DomainClassifier.cpp
+    src/infrastructure/embedding/DomainClassifier.h
     src/infrastructure/persistence/DatabaseConnectionFactory.cpp
     src/infrastructure/persistence/DatabaseConnectionFactory.h
     src/infrastructure/persistence/MigrationRunner.cpp
@@ -149,6 +159,10 @@ add_library(personos_infrastructure STATIC
     src/infrastructure/persistence/SqlAssessmentRepository.h
     src/infrastructure/persistence/SqlKnowledgeRepository.cpp
     src/infrastructure/persistence/SqlKnowledgeRepository.h
+    src/infrastructure/persistence/UserProfileBootstrap.cpp
+    src/infrastructure/persistence/UserProfileBootstrap.h
+    src/infrastructure/persistence/AuditDatabaseSink.cpp
+    src/infrastructure/persistence/AuditDatabaseSink.h
     src/infrastructure/persistence/SqlFileAssetRepository.cpp
     src/infrastructure/persistence/SqlFileAssetRepository.h
     src/infrastructure/knowledge/SqlKnowledgeFtsIndex.cpp
@@ -160,6 +174,8 @@ add_library(personos_infrastructure STATIC
     src/infrastructure/knowledge/ReliablePdfTextExtractor.h
     src/infrastructure/knowledge/SqlEmbeddingRepository.cpp
     src/infrastructure/knowledge/SqlEmbeddingRepository.h
+    src/infrastructure/knowledge/EmbeddingBackfill.cpp
+    src/infrastructure/knowledge/EmbeddingBackfill.h
     src/infrastructure/knowledge/CorpusPipeline.cpp
     src/infrastructure/knowledge/CorpusPipeline.h
     src/infrastructure/knowledge/MarkdownCorpusIndex.cpp
@@ -335,6 +351,8 @@ add_library(personos_presentation STATIC
     src/presentation/viewmodels/SettingsViewModel.h
     src/presentation/viewmodels/ThemeTokens.cpp
     src/presentation/viewmodels/ThemeTokens.h
+    src/presentation/viewmodels/AppNotifier.cpp
+    src/presentation/viewmodels/AppNotifier.h
 )
 target_include_directories(personos_presentation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(personos_presentation
@@ -358,6 +376,7 @@ set(PERSONOS_QML_REGISTERED_HEADERS
     src/presentation/viewmodels/SettingsViewModel.h
     src/presentation/viewmodels/ListItemModel.h
     src/presentation/viewmodels/ThemeTokens.h
+    src/presentation/viewmodels/AppNotifier.h
 )
 
 # ================= 应用（GUI）=================
@@ -376,6 +395,7 @@ set(PERSONOS_QML_FILES
     qml/components/AppProgressBar.qml
     qml/components/AppButton.qml
     qml/components/NavItem.qml
+    qml/components/Toast.qml
     qml/pages/DashboardPage.qml
     qml/pages/GoalRoutePage.qml
     qml/pages/MelPage.qml
@@ -564,6 +584,14 @@ target_link_libraries(tst_goal_route
     PRIVATE personos_infrastructure personos_core
 )
 
+qt_add_executable(tst_stage_detail
+    tests/tst_stage_detail.cpp
+)
+target_link_libraries(tst_stage_detail
+    PRIVATE Qt6::Test Qt6::Core Qt6::Sql
+    PRIVATE personos_infrastructure personos_core
+)
+
 qt_add_executable(tst_mel
     tests/tst_mel.cpp
 )
@@ -726,6 +754,18 @@ qt_add_executable(tst_embedding
     tests/tst_embedding.cpp
 )
 
+qt_add_executable(tst_domain_seed
+    tests/tst_domain_seed.cpp
+)
+
+qt_add_executable(tst_embedding_backfill
+    tests/tst_embedding_backfill.cpp
+)
+
+qt_add_executable(tst_startup_bootstrap
+    tests/tst_startup_bootstrap.cpp
+)
+
 qt_add_executable(tst_conversation_state
     tests/tst_conversation_state.cpp
 )
@@ -737,6 +777,25 @@ target_link_libraries(tst_embedding
     PRIVATE Qt6::Test Qt6::Core Qt6::Sql
     PRIVATE personos_infrastructure personos_core
 )
+target_link_libraries(tst_domain_seed
+    PRIVATE Qt6::Test Qt6::Core Qt6::Sql
+    PRIVATE personos_infrastructure personos_core
+)
+target_link_libraries(tst_embedding_backfill
+    PRIVATE Qt6::Test Qt6::Core Qt6::Sql
+    PRIVATE personos_infrastructure personos_core
+)
+target_link_libraries(tst_startup_bootstrap
+    PRIVATE Qt6::Test Qt6::Core Qt6::Sql
+    PRIVATE personos_infrastructure personos_core
+)
+# 领域种子测试:domains.json 部署到测试可执行目录 embedding/(分类器加载路径)
+add_custom_command(TARGET tst_domain_seed POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:tst_domain_seed>/embedding
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/domains.json"
+        "$<TARGET_FILE_DIR:tst_domain_seed>/embedding/domains.json")
 target_link_libraries(tst_restore
     PRIVATE Qt6::Test Qt6::Core Qt6::Sql
     PRIVATE personos_infrastructure personos_core
@@ -757,6 +816,53 @@ target_link_libraries(tst_corpus_scaffold
     PRIVATE Qt6::Test Qt6::Core Qt6::Sql
     PRIVATE personos_infrastructure personos_core
 )
+
+# 本地向量化(依赖外部 onnxruntime 与模型;缺失时 provider 编译为降级存根)
+set(PERSONOS_ONNX_DIR "D:/PersonOS-All-Task/libs/onnxruntime")
+set(PERSONOS_EMBED_MODEL_DIR "D:/PersonOS-All-Task/libs/models/minilm")
+if(EXISTS "${PERSONOS_ONNX_DIR}/include/onnxruntime_c_api.h"
+   AND EXISTS "${PERSONOS_ONNX_DIR}/lib/libonnxruntime.a"
+   AND EXISTS "${PERSONOS_ONNX_DIR}/bin/onnxruntime.dll")
+    target_compile_definitions(personos_infrastructure PUBLIC PERSONOS_LOCAL_EMBEDDING=1)
+    target_include_directories(personos_infrastructure PUBLIC
+        "${PERSONOS_ONNX_DIR}/include")
+    target_link_libraries(personos_infrastructure PUBLIC
+        "${PERSONOS_ONNX_DIR}/lib/libonnxruntime.a")
+    # 应用部署:onnxruntime.dll + embedding 资源(模型/分词器/领域描述)
+    add_custom_command(TARGET appPersonOS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PERSONOS_ONNX_DIR}/bin/onnxruntime.dll"
+            $<TARGET_FILE_DIR:appPersonOS>)
+    add_custom_command(TARGET appPersonOS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:appPersonOS>/embedding)
+    add_custom_command(TARGET appPersonOS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PERSONOS_EMBED_MODEL_DIR}/model-q8.onnx"
+            "$<TARGET_FILE_DIR:appPersonOS>/embedding/model.onnx")
+    add_custom_command(TARGET appPersonOS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PERSONOS_EMBED_MODEL_DIR}/tokenizer.json"
+            "$<TARGET_FILE_DIR:appPersonOS>/embedding/tokenizer.json")
+    add_custom_command(TARGET appPersonOS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/domains.json"
+            "$<TARGET_FILE_DIR:appPersonOS>/embedding/domains.json")
+endif()
+
+qt_add_executable(tst_local_embedding
+    tests/tst_local_embedding.cpp
+)
+target_link_libraries(tst_local_embedding
+    PRIVATE Qt6::Test Qt6::Core
+    PRIVATE personos_infrastructure
+)
+if(TARGET appPersonOS AND EXISTS "${PERSONOS_ONNX_DIR}/bin/onnxruntime.dll")
+    add_custom_command(TARGET tst_local_embedding POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PERSONOS_ONNX_DIR}/bin/onnxruntime.dll"
+            $<TARGET_FILE_DIR:tst_local_embedding>)
+endif()
 target_link_libraries(tst_markdown_corpus_index
     PRIVATE Qt6::Test Qt6::Core
     PRIVATE personos_infrastructure
@@ -848,6 +954,7 @@ add_test(NAME tst_mvp_loop    COMMAND tst_mvp_loop)
 add_test(NAME tst_foundation  COMMAND tst_foundation)
 add_test(NAME tst_database_migrations COMMAND tst_database_migrations)
 add_test(NAME tst_goal_route   COMMAND tst_goal_route)
+add_test(NAME tst_stage_detail COMMAND tst_stage_detail)
 add_test(NAME tst_mel          COMMAND tst_mel)
 add_test(NAME tst_review_state COMMAND tst_review_state)
 add_test(NAME tst_assessment    COMMAND tst_assessment)
@@ -867,6 +974,11 @@ add_test(NAME tst_ai_planning    COMMAND tst_ai_planning)
 add_test(NAME tst_provider       COMMAND tst_provider)
 add_test(NAME tst_pdf_extractor  COMMAND tst_pdf_extractor)
 add_test(NAME tst_corpus_scaffold COMMAND tst_corpus_scaffold)
+if(TARGET tst_local_embedding)
+    add_test(NAME tst_local_embedding COMMAND tst_local_embedding)
+    set_tests_properties(tst_local_embedding PROPERTIES
+        ENVIRONMENT "PERSONOS_EMBEDDING_DIR=D:/PersonOS-All-Task/libs/models/minilm")
+endif()
 add_test(NAME tst_markdown_corpus_index COMMAND tst_markdown_corpus_index)
 add_test(NAME tst_paper_analysis COMMAND tst_paper_analysis)
 add_test(NAME tst_model_connection COMMAND tst_model_connection)
@@ -876,6 +988,9 @@ add_test(NAME tst_security_audit   COMMAND tst_security_audit)
 add_test(NAME tst_benchmark        COMMAND tst_benchmark)
 add_test(NAME tst_restore         COMMAND tst_restore)
 add_test(NAME tst_embedding      COMMAND tst_embedding)
+add_test(NAME tst_domain_seed    COMMAND tst_domain_seed)
+add_test(NAME tst_embedding_backfill COMMAND tst_embedding_backfill)
+add_test(NAME tst_startup_bootstrap COMMAND tst_startup_bootstrap)
 add_test(NAME tst_conversation_state COMMAND tst_conversation_state)
 add_test(NAME tst_qml_smoke      COMMAND tst_qml_smoke)
 set_tests_properties(tst_qml_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

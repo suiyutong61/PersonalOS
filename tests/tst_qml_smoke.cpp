@@ -14,6 +14,7 @@
 #include "infrastructure/knowledge/ReviewQuestionnaireSeed.h"
 #include "infrastructure/knowledge/StateDefinitionsSeed.h"
 #include "infrastructure/foundation/QtSystemClock.h"
+#include "presentation/viewmodels/AppNotifier.h"
 
 class TstQmlSmoke : public QObject
 {
@@ -46,6 +47,10 @@ private slots:
     void mainWindowLoads()
     {
         QQmlApplicationEngine engine;
+        // 与 main.cpp 同款装配：应用内提醒横幅单例（Toast 依赖）；
+        // 独立 URI PersonOS.App，避免与 QML 模块 URI 冲突
+        qmlRegisterSingletonInstance("PersonOS.App", 1, 0, "AppNotifier",
+                                     &PersonOS::Presentation::AppNotifier::instance());
         QSignalSpy failed(&engine, &QQmlApplicationEngine::objectCreationFailed);
         engine.loadFromModule("PersonOS", "Main");
         QTRY_COMPARE_WITH_TIMEOUT(engine.rootObjects().size(), 1, 5000);
@@ -53,6 +58,19 @@ private slots:
         QVERIFY(!engine.rootObjects().isEmpty());
         const QObject *window = engine.rootObjects().first();
         QVERIFY2(window, "Main window must be created");
+    }
+
+    void appNotifierSingletonDelivers()
+    {
+        auto &notifier = PersonOS::Presentation::AppNotifier::instance();
+        const int before = notifier.sequence();
+        // 通知端口语义：deliver 即显示应用内横幅（v1 唯一通道）
+        QVERIFY(notifier.deliver("Personal OS 提醒", "「测试 MEL」已到 Deadline"));
+        QCOMPARE(notifier.sequence(), before + 1);
+        QVERIFY(notifier.text().contains(QStringLiteral("Personal OS 提醒")));
+        QVERIFY(notifier.text().contains(QStringLiteral("已到 Deadline")));
+        notifier.dismiss();
+        QVERIFY(notifier.text().isEmpty());
     }
 
 private:

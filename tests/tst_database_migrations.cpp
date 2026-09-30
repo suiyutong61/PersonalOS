@@ -87,6 +87,16 @@ private slots:
         }
     }
 
+    void v12AttemptColumnExists()
+    {
+        QSqlQuery query(DatabaseManager::instance().database());
+        QVERIFY(query.exec(QStringLiteral(
+            "SELECT COUNT(*) FROM pragma_table_info('reminder_deliveries_v6') "
+            "WHERE name='attempt_count'")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toInt(), 1);
+    }
+
     void foreignKeysAreClean()
     {
         QSqlQuery query(DatabaseManager::instance().database());

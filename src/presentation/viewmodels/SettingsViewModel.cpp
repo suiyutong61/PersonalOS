@@ -2,8 +2,12 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
+#include <QSqlDatabase>
 #include <QVariantMap>
+#include <QtConcurrent/QtConcurrent>
 
+#include "application/audit/Audit.h"
 #include "application/usecases/operations/OperationUseCases.h"
 #include "database/DatabaseManager.h"
 #include "domain/foundation/Uid.h"
@@ -11,10 +15,17 @@
 #include "infrastructure/ai/OpenAiCompatibleProvider.h"
 #include "infrastructure/ai/ModelConnectionTestService.h"
 #include "infrastructure/ai/WindowsCredentialStore.h"
+#include "infrastructure/embedding/DomainClassifier.h"
+#include "infrastructure/embedding/LocalEmbeddingProvider.h"
 #include "infrastructure/foundation/QtSystemClock.h"
 #include "infrastructure/foundation/QtUidGenerator.h"
+#include "infrastructure/knowledge/EmbeddingBackfill.h"
+#include "infrastructure/knowledge/SqlEmbeddingRepository.h"
+#include "infrastructure/operations/DatabaseManagerSwitch.h"
 #include "infrastructure/operations/SqlOperationsRepository.h"
 #include "infrastructure/operations/SqliteBackup.h"
+#include "infrastructure/persistence/DatabaseConnectionFactory.h"
+#include "infrastructure/persistence/UserProfileBootstrap.h"
 #include "presentation/viewmodels/VmSupport.h"
 
 namespace PersonOS {
@@ -27,7 +38,8 @@ QVariantMap connectionRow(const Domain::AiProviderConfig &config,
     return {{QStringLiteral("uid"), QString::fromStdString(config.uid.value())},
             {QStringLiteral("title"), QString::fromStdString(config.displayName)},
             {QStringLiteral("subtitle"),
-             QString::fromStdString(config.providerCode) + QStringLiteral(" · ")
+             Presentation::providerCodeLabel(QString::fromStdString(config.providerCode))
+                 + QStringLiteral(" · ")
                  + QString::fromStdString(config.model)},
             {QStringLiteral("detail"), QString::fromStdString(config.endpoint)
                  + QStringLiteral(" · ")
@@ -46,13 +58,19 @@ QVariantMap connectionRow(const Domain::AiProviderConfig &config,
 QVariantMap backupRow(const Domain::BackupRecord &record)
 {
     return {{QStringLiteral("uid"), QString::fromStdString(record.uid.value())},
-            {QStringLiteral("title"), QString::fromStdString(record.startedAt)},
+            {QStringLiteral("title"),
+             Presentation::displayDateTime(QString::fromStdString(record.startedAt))},
             {QStringLiteral("subtitle"), QString::fromStdString(record.relativePath)},
-            {QStringLiteral("badge"), QString::fromStdString(record.status)},
+            {QStringLiteral("badge"),
+             record.status == "verified" ? QStringLiteral("已校验")
+                                         : QString::fromStdString(record.status)},
             {QStringLiteral("badgeTone"),
              record.status == "verified" ? QStringLiteral("success") : QStringLiteral("neutral")},
+            // 只显示校验值前缀(完整值用于恢复校验,不用于展示)
             {QStringLiteral("detail"),
-             record.sha256 ? QString::fromStdString(*record.sha256) : QString()}};
+             record.sha256 ? QString::fromStdString(*record.sha256).left(12)
+                                 + QStringLiteral("…")
+                           : QString()}};
 }
 
 } // namespace
@@ -71,6 +89,12 @@ void SettingsViewModel::setError(const QString &message)
 {
     m_lastError = message;
     emit lastErrorChanged();
+}
+
+void SettingsViewModel::setNotice(const QString &message)
+{
+    m_notice = message;
+    emit noticeChanged();
 }
 
 void SettingsViewModel::setDarkMode(bool value)
@@ -329,6 +353,25 @@ void SettingsViewModel::testConnection(const QString &uid)
                      : QStringLiteral("连接测试失败（%1）；配置保持停用").arg(reason));
         return;
     }
+    // 探测到的能力回写配置（修订号守卫，重读当前行）：
+    // 能力路由与 HTTP 向量通道依赖 config.capabilities_json，
+    // 此前从不回写导致 embedding 能力永不生效
+    {
+        const auto current = repo.findConfig(*parsed);
+        if (!current) {
+            setState(QStringLiteral("error"));
+            setError(QStringLiteral("连接不存在"));
+            return;
+        }
+        auto updated = *current;
+        updated.capabilitiesJson = tested.value().capabilitiesJson;
+        const auto saved = repo.updateConfig(updated, current->revision);
+        if (!saved.ok) {
+            setState(QStringLiteral("conflict"));
+            setError(QStringLiteral("配置已被修改，请重新测试"));
+            return;
+        }
+    }
     refresh();
 }
 
@@ -366,6 +409,31 @@ void SettingsViewModel::removeConnection(const QString &uid)
     refresh();
 }
 
+void SettingsViewModel::saveToolPaths(const QString &pdftotext, const QString &tesseract)
+{
+    QSettings settings;
+    if (!pdftotext.trimmed().isEmpty())
+        settings.setValue(QStringLiteral("literature/pdftotext"), pdftotext.trimmed());
+    else
+        settings.remove(QStringLiteral("literature/pdftotext"));
+    if (!tesseract.trimmed().isEmpty())
+        settings.setValue(QStringLiteral("literature/tesseract"), tesseract.trimmed());
+    else
+        settings.remove(QStringLiteral("literature/tesseract"));
+    setError({});
+    setNotice(QStringLiteral("工具路径已保存"));
+}
+
+QString SettingsViewModel::currentPdfToTextPath()
+{
+    return Presentation::configuredPdfToTextPath();
+}
+
+QString SettingsViewModel::currentTesseractPath()
+{
+    return Presentation::configuredTesseractPath();
+}
+
 void SettingsViewModel::createBackup(const QString &targetPath)
 {
     if (targetPath.trimmed().isEmpty()) {
@@ -392,6 +460,148 @@ void SettingsViewModel::createBackup(const QString &targetPath)
         return;
     }
     refresh();
+}
+
+void SettingsViewModel::verifyBackup(const QString &uid)
+{
+    const auto parsed = Domain::Uid::parse(uid.toStdString());
+    if (!parsed) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("无效的备份标识"));
+        return;
+    }
+    const auto database = DatabaseManager::instance().database();
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::QtUidGenerator uids;
+    Infrastructure::SqlOperationsRepository repo(database, clock);
+    Infrastructure::SqliteBackup snapshots;
+    Application::BackupService backups(repo, snapshots, uids, clock);
+    const auto verified = backups.verifyBackup(*parsed);
+    if (!verified) {
+        setState(QStringLiteral("error"));
+        setError(Presentation::friendlyError(verified.error().message,
+                                             verified.error().detail));
+        return;
+    }
+    setNotice(verified.value() ? QStringLiteral("备份校验通过：内容与校验值一致")
+                               : QStringLiteral("备份校验失败：内容与校验值不一致（可能被篡改）"));
+    refresh();
+}
+
+void SettingsViewModel::restoreBackup(const QString &uid)
+{
+    const auto parsed = Domain::Uid::parse(uid.toStdString());
+    if (!parsed) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("无效的备份标识"));
+        return;
+    }
+    setState(QStringLiteral("loading"));
+    setError({});
+    setNotice({});
+    // 受控点:切换前关闭本线程的审计工厂连接(其文件句柄指向旧库,
+    // 切换后旧文件被改名,继续使用会把审计写进恢复前快照)
+    Infrastructure::DatabaseConnectionFactory::closeCurrentThreadConnection(
+        QStringLiteral("audit"));
+
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::QtUidGenerator uids;
+    Application::RestoreService::RestoreReport report;
+    {
+        Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
+                                                     clock);
+        Infrastructure::DatabaseManagerSwitch switcher;
+        Application::RestoreService restores(repo, switcher, uids, clock);
+        const auto restored = restores.restore(*parsed,
+                                               DatabaseManager::instance().schemaVersion());
+        if (!restored) {
+            setState(QStringLiteral("error"));
+            setError(Presentation::friendlyError(restored.error().message,
+                                                 restored.error().detail));
+            return;
+        }
+        report = restored.value();
+    }
+
+    // 恢复成功后(新连接已重开):重新执行启动引导,否则恢复的库若缺少
+    // 档案/种子,依赖它们的页面全部不可用(真机隐患排查发现的首发引导缺口)
+    if (!Infrastructure::ensureStartupSeeded(DatabaseManager::instance().database()))
+        qWarning("恢复后启动引导未全部完成");
+    // 领域向量内存缓存来自旧库:失效后按指纹重新装载/重算
+    Infrastructure::DomainClassifier::instance().invalidateCache();
+    // 补记备份状态与恢复审计(旧连接已失效,必须用新连接)
+    {
+        Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
+                                                     clock);
+        const auto current = repo.find(*parsed);
+        if (current) {
+            auto updated = *current;
+            updated.status = "verified";   // 状态枚举固定 running/verified/failed
+            updated.completedAt = clock.utcIso();
+            const auto saved = repo.update(updated);
+            if (!saved.ok)
+                qWarning("恢复后备份状态补记失败");
+        }
+        Application::Audit::record(
+            {"user", {}, "backup.restored", "backup", uid.toStdString(),
+             "{\"pre_restore_snapshot\":\"" + report.preRestoreSnapshotPath + "\"}"});
+    }
+    setNotice(QStringLiteral("已恢复备份，恢复前数据保留在快照：%1")
+                  .arg(QString::fromStdString(report.preRestoreSnapshotPath)));
+    refresh();
+}
+
+void SettingsViewModel::rebuildVectorIndex()
+{
+    if (!Infrastructure::LocalEmbeddingProvider::filesPresent()) {
+        setState(QStringLiteral("conflict"));
+        setError(QStringLiteral("本地向量模型未安装（embedding/model.onnx 缺失），无法重建向量索引"));
+        return;
+    }
+    setState(QStringLiteral("loading"));
+    setError({});
+    setNotice({});
+    const QString dbPath = DatabaseManager::instance().databasePath();
+    QtConcurrent::run([dbPath]() {
+        Infrastructure::LocalEmbeddingProvider &provider =
+            Infrastructure::sharedLocalEmbedding();
+        if (!provider.isReady())
+            return QStringLiteral("本地向量模型加载失败：") + provider.lastError();
+        Infrastructure::DatabaseConnectionFactory factory(dbPath);
+        QString openError;
+        QSqlDatabase workerDb =
+            factory.openForCurrentThread(QStringLiteral("embedding_rebuild"), &openError);
+        if (!workerDb.isOpen())
+            return QStringLiteral("数据库连接失败：") + openError;
+        const auto finish = [&](const QString &message) {
+            Infrastructure::DatabaseConnectionFactory::closeCurrentThreadConnection(
+                QStringLiteral("embedding_rebuild"));
+            return message;
+        };
+        {
+            // 清空当前模型向量 → 全量回填（可重建派生数据，不影响原始知识）
+            Infrastructure::SqlEmbeddingRepository store(workerDb);
+            const auto removed = store.removeForModel(provider.modelId());
+            if (!removed.hasValue())
+                return finish(QStringLiteral("向量清理失败：")
+                              + QString::fromStdString(removed.error().message));
+            Infrastructure::EmbeddingBackfill backfill(workerDb, provider);
+            const auto progress = backfill.runOneBatch(0);
+            // 领域行立即重种：避免重建→重启前领域分类缺失的窗口
+            Infrastructure::DomainClassifier::persistDomainsToDatabase(dbPath);
+            return finish(QStringLiteral("OK:已重建 %1 条知识向量（%2 条失败）")
+                              .arg(progress.embedded)
+                              .arg(progress.failed));
+        }
+    }).then([this](const QString &resultText) {
+        if (resultText.startsWith(QStringLiteral("OK:"))) {
+            setNotice(resultText.mid(3));
+            refresh();
+        } else {
+            setState(QStringLiteral("error"));
+            setError(resultText);
+        }
+    });
 }
 
 } // namespace PersonOS

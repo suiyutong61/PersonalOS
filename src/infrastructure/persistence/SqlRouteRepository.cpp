@@ -279,4 +279,238 @@ std::vector<Domain::RouteVersion> SqlRouteRepository::versionsOf(const Domain::U
     return out;
 }
 
+// ===== 阶段详情（route_stage_details_v11 / route_stage_materials_v11）=====
+
+namespace {
+// JSON 列带 json_valid CHECK：空串非法，仓储统一默认 '[]'（insertVersion 同款口径）。
+std::string jsonArrayOrEmpty(const std::string &json)
+{
+    return json.empty() ? std::string("[]") : json;
+}
+
+bool jsonInvalidWhenNonEmpty(const std::string &json)
+{
+    return !json.empty() && QJsonDocument::fromJson(QByteArray::fromStdString(json)).isNull();
+}
+} // namespace
+
+std::optional<Application::StageLocation> SqlRouteRepository::locateStage(
+    const Domain::Uid &stageUid)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT s.uid, s.title, s.description, s.sequence_no, s.completion_rule_json, "
+        "s.estimated_effort_min, s.revision, v.uid AS version_uid, v.version_no, "
+        "r.uid AS route_uid, r.status "
+        "FROM route_stages_v3 s "
+        "JOIN route_versions_v3 v ON v.id=s.route_version_id "
+        "JOIN routes_v3 r ON r.id=v.route_id WHERE s.uid=?"));
+    query.addBindValue(QString::fromStdString(stageUid.value()));
+    if (!query.exec() || !query.next())
+        return std::nullopt;
+    const auto parsed = Domain::Uid::parse(query.value("uid").toString().toStdString());
+    const auto routeUid = Domain::Uid::parse(query.value("route_uid").toString().toStdString());
+    if (!parsed || !routeUid)
+        return std::nullopt;
+    Application::StageLocation location;
+    location.stage.uid = *parsed;
+    location.stage.title = query.value("title").toString().toStdString();
+    location.stage.description = query.value("description").toString().toStdString();
+    location.stage.sequenceNo = query.value("sequence_no").toInt();
+    location.stage.completionRuleJson =
+        query.value("completion_rule_json").toString().toStdString();
+    if (!query.value("estimated_effort_min").isNull())
+        location.stage.estimatedEffortMin = query.value("estimated_effort_min").toInt();
+    location.stage.revision = query.value("revision").toInt();
+    location.routeUid = *routeUid;
+    location.routeVersionUid = query.value("version_uid").toString().toStdString();
+    location.routeVersionNo = query.value("version_no").toInt();
+    if (const auto status =
+            Domain::routeStatusFrom(query.value("status").toString().toStdString()))
+        location.routeStatus = *status;
+    return location;
+}
+
+std::vector<Domain::StageDetailVersion> SqlRouteRepository::stageDetailVersionsOf(
+    const Domain::Uid &stageUid)
+{
+    std::vector<Domain::StageDetailVersion> out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT uid, version_no, outcomes_json, tasks_json, projects_json, criteria_json, "
+        "rationale, created_by, user_confirmed_at, revision FROM route_stage_details_v11 "
+        "WHERE stage_id=(SELECT id FROM route_stages_v3 WHERE uid=?) ORDER BY version_no"));
+    query.addBindValue(QString::fromStdString(stageUid.value()));
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        Domain::StageDetailVersion detail;
+        if (const auto uid = Domain::Uid::parse(query.value("uid").toString().toStdString()))
+            detail.uid = *uid;
+        detail.stageUid = stageUid;
+        detail.versionNo = query.value("version_no").toInt();
+        detail.outcomesJson = query.value("outcomes_json").toString().toStdString();
+        detail.tasksJson = query.value("tasks_json").toString().toStdString();
+        detail.projectsJson = query.value("projects_json").toString().toStdString();
+        detail.criteriaJson = query.value("criteria_json").toString().toStdString();
+        detail.rationale = query.value("rationale").toString().toStdString();
+        detail.createdBy = query.value("created_by").toString().toStdString();
+        if (!query.value("user_confirmed_at").isNull())
+            detail.userConfirmedAt = query.value("user_confirmed_at").toString().toStdString();
+        detail.revision = query.value("revision").toInt();
+        out.push_back(std::move(detail));
+    }
+    return out;
+}
+
+Application::Result<std::string, Application::ApplicationError>
+SqlRouteRepository::insertStageDetail(const Domain::StageDetailVersion &detail)
+{
+    if (jsonInvalidWhenNonEmpty(detail.outcomesJson) || jsonInvalidWhenNonEmpty(detail.tasksJson)
+        || jsonInvalidWhenNonEmpty(detail.projectsJson)
+        || jsonInvalidWhenNonEmpty(detail.criteriaJson))
+        return Application::Result<std::string, Application::ApplicationError>::failure(
+            {Application::ErrorCode::Validation, "stage detail json invalid", {}, false});
+
+    QSqlQuery stageQuery(m_database);
+    stageQuery.prepare(QStringLiteral("SELECT id FROM route_stages_v3 WHERE uid=?"));
+    stageQuery.addBindValue(QString::fromStdString(detail.stageUid.value()));
+    if (!stageQuery.exec() || !stageQuery.next())
+        return Application::Result<std::string, Application::ApplicationError>::failure(
+            {Application::ErrorCode::NotFound, "route stage not found", {}, false});
+    const qint64 stagePk = stageQuery.value(0).toLongLong();
+
+    const std::string now = formatUtcIso(m_clock.now());
+    const std::string uid =
+        QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO route_stage_details_v11(uid, stage_id, version_no, outcomes_json, "
+        "tasks_json, projects_json, criteria_json, rationale, created_by, created_at, "
+        "user_confirmed_at, revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)"));
+    query.addBindValue(QString::fromStdString(uid));
+    query.addBindValue(stagePk);
+    query.addBindValue(detail.versionNo);
+    query.addBindValue(QString::fromStdString(jsonArrayOrEmpty(detail.outcomesJson)));
+    query.addBindValue(QString::fromStdString(jsonArrayOrEmpty(detail.tasksJson)));
+    query.addBindValue(QString::fromStdString(jsonArrayOrEmpty(detail.projectsJson)));
+    query.addBindValue(QString::fromStdString(jsonArrayOrEmpty(detail.criteriaJson)));
+    query.addBindValue(QString::fromStdString(detail.rationale));
+    query.addBindValue(QString::fromStdString(detail.createdBy));
+    query.addBindValue(QString::fromStdString(now));
+    query.addBindValue(detail.userConfirmedAt
+                           ? QVariant(QString::fromStdString(*detail.userConfirmedAt))
+                           : QVariant());
+    if (!query.exec())
+        return Application::Result<std::string, Application::ApplicationError>::failure(
+            {Application::ErrorCode::Storage, "stage detail insert failed",
+             query.lastError().text().toStdString(), false});
+    return Application::Result<std::string, Application::ApplicationError>::success(uid);
+}
+
+Application::SaveResult SqlRouteRepository::markStageDetailConfirmed(
+    const Domain::Uid &stageUid, int versionNo, const std::string &confirmedAtIso)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "UPDATE route_stage_details_v11 SET user_confirmed_at=? "
+        "WHERE stage_id=(SELECT id FROM route_stages_v3 WHERE uid=?) AND version_no=? "
+        "AND user_confirmed_at IS NULL"));
+    query.addBindValue(QString::fromStdString(confirmedAtIso));
+    query.addBindValue(QString::fromStdString(stageUid.value()));
+    query.addBindValue(versionNo);
+    if (!query.exec())
+        return writeFailure("stage detail confirm failed", query);
+    if (query.numRowsAffected() == 0)
+        return {false, true,
+                {Application::ErrorCode::Conflict,
+                 "stage detail already confirmed or not found", {}, false}};
+    return {true, false, {}};
+}
+
+Application::SaveResult SqlRouteRepository::upsertStageMaterial(
+    const Domain::StageMaterialBinding &material)
+{
+    QSqlQuery stageQuery(m_database);
+    stageQuery.prepare(QStringLiteral("SELECT id FROM route_stages_v3 WHERE uid=?"));
+    stageQuery.addBindValue(QString::fromStdString(material.stageUid.value()));
+    if (!stageQuery.exec() || !stageQuery.next())
+        return {false, false,
+                {Application::ErrorCode::NotFound, "route stage not found", {}, false}};
+    const qint64 stagePk = stageQuery.value(0).toLongLong();
+
+    const std::string now = formatUtcIso(m_clock.now());
+    QSqlQuery query(m_database);
+    // 重建议语义：已 accepted 的用户决定保持不动，其余重置为 pending 并更新建议内容。
+    // 未加限定的 user_choice 在 DO UPDATE 中指原行值；excluded.* 指本次插入值。
+    query.prepare(QStringLiteral(
+        "INSERT INTO route_stage_materials_v11(stage_id, knowledge_item_uid, "
+        "knowledge_version_uid, rank, reason, user_choice, created_by, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(stage_id,knowledge_item_uid) DO UPDATE SET "
+        "knowledge_version_uid=excluded.knowledge_version_uid, rank=excluded.rank, "
+        "reason=excluded.reason, "
+        "user_choice=CASE WHEN user_choice='accepted' THEN 'accepted' ELSE 'pending' END, "
+        "created_by=excluded.created_by, updated_at=excluded.updated_at"));
+    query.addBindValue(stagePk);
+    query.addBindValue(QString::fromStdString(material.knowledgeItemUid));
+    query.addBindValue(QString::fromStdString(material.knowledgeVersionUid));
+    query.addBindValue(material.rank);
+    query.addBindValue(QString::fromStdString(material.reason));
+    query.addBindValue(QString::fromStdString(material.userChoice));
+    query.addBindValue(QString::fromStdString(material.createdBy));
+    query.addBindValue(QString::fromStdString(now));
+    if (!query.exec())
+        return writeFailure("stage material upsert failed", query);
+    return {true, false, {}};
+}
+
+std::vector<Domain::StageMaterialBinding> SqlRouteRepository::stageMaterialsOf(
+    const Domain::Uid &stageUid)
+{
+    std::vector<Domain::StageMaterialBinding> out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT knowledge_item_uid, knowledge_version_uid, rank, reason, user_choice, "
+        "created_by FROM route_stage_materials_v11 "
+        "WHERE stage_id=(SELECT id FROM route_stages_v3 WHERE uid=?) ORDER BY rank, id"));
+    query.addBindValue(QString::fromStdString(stageUid.value()));
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        Domain::StageMaterialBinding material;
+        material.stageUid = stageUid;
+        material.knowledgeItemUid = query.value("knowledge_item_uid").toString().toStdString();
+        material.knowledgeVersionUid =
+            query.value("knowledge_version_uid").toString().toStdString();
+        material.rank = query.value("rank").toInt();
+        material.reason = query.value("reason").toString().toStdString();
+        material.userChoice = query.value("user_choice").toString().toStdString();
+        material.createdBy = query.value("created_by").toString().toStdString();
+        out.push_back(std::move(material));
+    }
+    return out;
+}
+
+Application::SaveResult SqlRouteRepository::updateStageMaterialChoice(
+    const Domain::Uid &stageUid, const std::string &itemUid, const std::string &choice)
+{
+    const std::string now = formatUtcIso(m_clock.now());
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "UPDATE route_stage_materials_v11 SET user_choice=?, updated_at=? "
+        "WHERE stage_id=(SELECT id FROM route_stages_v3 WHERE uid=?) "
+        "AND knowledge_item_uid=?"));
+    query.addBindValue(QString::fromStdString(choice));
+    query.addBindValue(QString::fromStdString(now));
+    query.addBindValue(QString::fromStdString(stageUid.value()));
+    query.addBindValue(QString::fromStdString(itemUid));
+    if (!query.exec())
+        return writeFailure("stage material choice update failed", query);
+    if (query.numRowsAffected() == 0)
+        return {false, false,
+                {Application::ErrorCode::NotFound, "stage material not found", {}, false}};
+    return {true, false, {}};
+}
+
 } // namespace PersonOS::Infrastructure

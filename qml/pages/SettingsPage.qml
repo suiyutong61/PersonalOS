@@ -12,6 +12,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     // 主题控制直接作用于设计令牌（深浅色 / 减少动效）
     Binding {
         target: ThemeTokens
@@ -41,13 +44,21 @@ Item {
             contentCount: 1
         }
 
+        InfoBanner {
+            Layout.fillWidth: true
+            visible: vm.notice !== ""
+            tone: "success"
+            text: vm.notice
+        }
+
         // 内容区用 ScrollView 承载自然高度：窗口不够高时整体滚动，
         // 而不是把卡片高度压缩导致内容互相叠压、表单被底边切断。
         ScrollView {
             id: settingsScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: vm.pageState === "ready"
+            visible: vm.pageState === "ready" || vm.pageState === "conflict"
+                     || vm.pageState === "error" || vm.pageState === "offline"
             contentWidth: availableWidth
             clip: true
 
@@ -219,6 +230,42 @@ Item {
                     Layout.fillWidth: true
                     padding: ThemeTokens.spacingMd
                     ColumnLayout {
+                        anchors.fill: parent
+                        spacing: ThemeTokens.spacingSm
+                        Text {
+                            text: qsTr("文献处理工具（可选）")
+                            font.pixelSize: ThemeTokens.fontSizeSection
+                            font.weight: Font.DemiBold
+                            color: ThemeTokens.textPrimary
+                        }
+                        Text {
+                            text: qsTr("论文 PDF 提取与扫描件 OCR 使用；留空时自动探测常见安装位置")
+                            font.pixelSize: ThemeTokens.fontSizeCaption
+                            color: ThemeTokens.textSecondary
+                        }
+                        TextField {
+                            id: toolPdfToText
+                            Layout.fillWidth: true
+                            text: vm.currentPdfToTextPath()
+                            placeholderText: qsTr("pdftotext 路径")
+                        }
+                        TextField {
+                            id: toolTesseract
+                            Layout.fillWidth: true
+                            text: vm.currentTesseractPath()
+                            placeholderText: qsTr("tesseract 路径（如 D:/Tesseract-OCR/tesseract.exe）")
+                        }
+                        AppButton {
+                            text: qsTr("保存工具路径")
+                            onClicked: vm.saveToolPaths(toolPdfToText.text, toolTesseract.text)
+                        }
+                    }
+                }
+
+                Card {
+                    Layout.fillWidth: true
+                    padding: ThemeTokens.spacingMd
+                    ColumnLayout {
                         id: backupContent
                         anchors.fill: parent
                         spacing: ThemeTokens.spacingSm
@@ -246,10 +293,11 @@ Item {
                         ListView {
                             id: backupList
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 90
+                            Layout.preferredHeight: 120
                             clip: true
                             model: vm.backupsModel
                             delegate: RowLayout {
+                                required property string uid
                                 required property string title
                                 required property string subtitle
                                 required property string badge
@@ -271,7 +319,70 @@ Item {
                                     text: badge
                                     tone: badgeTone
                                 }
+                                AppButton {
+                                    text: qsTr("校验")
+                                    onClicked: vm.verifyBackup(uid)
+                                }
+                                AppButton {
+                                    text: qsTr("恢复")
+                                    variant: "primary"
+                                    onClicked: {
+                                        restoreDialog.backupUid = uid
+                                        restoreDialog.open()
+                                    }
+                                }
                             }
+                        }
+
+                        // 恢复二次确认:整体切换数据库,操作不可撤销
+                        // (恢复前数据保留在 .pre-restore-* 快照)
+                        Dialog {
+                            id: restoreDialog
+                            property string backupUid: ""
+                            anchors.centerIn: parent
+                            modal: true
+                            title: qsTr("恢复备份")
+                            Text {
+                                text: qsTr("将用所选备份整体替换当前数据库。"
+                                          + "恢复前的数据会保留为快照文件。确定继续？")
+                                wrapMode: Text.WordWrap
+                            }
+                            footer: DialogButtonBox {
+                                standardButtons: DialogButtonBox.Yes | DialogButtonBox.No
+                                onAccepted: {
+                                    vm.restoreBackup(restoreDialog.backupUid)
+                                    restoreDialog.close()
+                                }
+                                onRejected: restoreDialog.close()
+                            }
+                        }
+                    }
+                }
+
+                Card {
+                    Layout.fillWidth: true
+                    padding: ThemeTokens.spacingMd
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: ThemeTokens.spacingSm
+                        Text {
+                            text: qsTr("本地向量索引")
+                            font.pixelSize: ThemeTokens.fontSizeSection
+                            font.weight: Font.DemiBold
+                            color: ThemeTokens.textPrimary
+                        }
+                        Text {
+                            text: qsTr("知识条目的语义检索向量（本地模型生成，零 API 成本）。"
+                                      + "模型更换或索引异常时可重建；重建不影响原始知识，"
+                                      + "失败也不影响正常检索。")
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            font.pixelSize: ThemeTokens.fontSizeCaption
+                            color: ThemeTokens.textSecondary
+                        }
+                        AppButton {
+                            text: qsTr("重建向量索引")
+                            onClicked: vm.rebuildVectorIndex()
                         }
                     }
                 }

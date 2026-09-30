@@ -59,7 +59,9 @@ ColumnLayout {
         visible: root.showOffline
         Layout.fillWidth: true
         tone: "warning"
-        text: qsTr("离线：本地功能仍可用，依赖外部 AI 的操作需等待网络恢复")
+        // 优先展示具体指引(如"未配置模型连接"),通用话术仅为兜底
+        text: root.message !== "" ? root.message
+                                  : qsTr("离线：本地功能仍可用，依赖外部 AI 的操作需等待网络恢复")
     }
 
     InfoBanner {

@@ -18,8 +18,9 @@ namespace PersonOS::Application {
 class ReminderService
 {
 public:
-    ReminderService(ReminderRepositoryPort &repo, NotificationPort &notifications,
-                    UuidPort &uids, const Domain::Clock &clock);
+    ReminderService(ReminderRepositoryPort &repo, MelRepository &mels,
+                    NotificationPort &notifications, UuidPort &uids,
+                    const Domain::Clock &clock);
 
     // 为 owner 建立提醒（相对事件时间 offset 分钟）
     struct RuleInput
@@ -36,14 +37,22 @@ public:
     Result<Domain::ReminderRule, ApplicationError> disableRule(const Domain::Uid &ruleUid,
                                                                int expectedRevision);
 
-    // 调度：为所有启用规则生成到期投递（幂等键 rule+offset+触发时刻唯一）
+    // 为无任何提醒规则的活跃 MEL 自动建立默认 Deadline 规则（app 渠道、
+    // 提前 0 分钟）。停用规则视为"用户已决定"，不自动重建。返回新建数。
+    Result<int, ApplicationError> ensureMelDeadlineReminders(const Domain::Uid &userId,
+                                                             int limit);
+
+    // 调度：v1 只调度绑定 MEL 的规则——到期时刻 = MEL Deadline − offsetMin；
+    // 未到期不产生投递；幂等键 = rule uid + 到期时刻（重启补发不重复，DB-06）
     Result<int, ApplicationError> scheduleDue(const std::string &triggerAtIso);
 
-    // 投递：发送全部 pending 投递（通知失败只记录 failed，不改变业务状态）
+    // 投递：发送全部待投递（静默时段记 suppressed；通知失败只记录 failed
+    // 并计入重试，不改变业务状态，DR-024）
     Result<int, ApplicationError> dispatchPending();
 
 private:
     ReminderRepositoryPort &m_repo;
+    MelRepository &m_mels;
     NotificationPort &m_notifications;
     UuidPort &m_uids;
     const Domain::Clock &m_clock;
@@ -105,8 +114,11 @@ public:
         std::string preRestoreSnapshotPath;   // 恢复前安全快照（成功时保留）
     };
 
-    // 恢复指定备份：任何一步失败都保持原数据可用（调用方先自行备份）
-    Result<RestoreReport, ApplicationError> restore(const Domain::Uid &backupUid);
+    // 恢复指定备份：任何一步失败都保持原数据可用（调用方先自行备份）。
+    // supportedSchemaVersion = 当前程序支持的数据库 schema 版本
+    // （高于此版本的备份被拒绝——版本随应用演进，不得写死）
+    Result<RestoreReport, ApplicationError> restore(const Domain::Uid &backupUid,
+                                                    int supportedSchemaVersion);
 
 private:
     BackupRepositoryPort &m_repo;
@@ -120,12 +132,15 @@ class StartupRecovery
 {
 public:
     StartupRecovery(MelRepository &mels, MelUseCases &melUseCases,
-                    ReminderService &reminders, const Domain::Clock &clock);
+                    ReminderService &reminders, const Domain::Uid &userId,
+                    const Domain::Clock &clock);
 
     struct Report
     {
         int dueMelsFound = 0;
         int settled = 0;
+        int remindersCreated = 0;     // 自动建立的默认 Deadline 规则数
+        int remindersScheduled = 0;   // 补发的投递行数
     };
     Result<Report, ApplicationError> run();
 
@@ -133,6 +148,7 @@ private:
     MelRepository &m_mels;
     MelUseCases &m_melUseCases;
     ReminderService &m_reminders;
+    const Domain::Uid &m_userId;
     const Domain::Clock &m_clock;
 };
 

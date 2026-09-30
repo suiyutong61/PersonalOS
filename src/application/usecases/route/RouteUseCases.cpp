@@ -5,8 +5,8 @@
 namespace PersonOS::Application {
 
 RouteUseCases::RouteUseCases(RouteRepository &routes, GoalRepository &goals, UuidPort &uids,
-                             const Domain::Clock &clock)
-    : m_routes(routes), m_goals(goals), m_uids(uids), m_clock(clock)
+                             const Domain::Clock &clock, DecisionStore *decisions)
+    : m_routes(routes), m_goals(goals), m_uids(uids), m_clock(clock), m_decisions(decisions)
 {}
 
 Result<RouteUseCases::ProposeOutput, ApplicationError> RouteUseCases::proposeRoute(
@@ -84,6 +84,20 @@ Result<Domain::Route, ApplicationError> RouteUseCases::confirmRoute(
     if (!saved.ok)
         return Result<Domain::Route, ApplicationError>::failure(saved.error);
     updated.revision = expectedRevision + 1;
+
+    // 决策记录接线：把该路线最新的 Pending route_proposal 决策标记为 accepted，
+    // 并把确认采用的候选原文写入 selected_json（与阶段详情确认同款；无匹配
+    // 记录时跳过——用户手工路线/历史数据容错，不阻断确认）
+    if (m_decisions)
+        for (const auto &decision : m_decisions->listDecisions("route_proposal", 20))
+            if (decision.aggregateType == "route" && decision.aggregateUid == routeUid.value()
+                && decision.userStatus == Domain::DecisionUserStatus::Pending) {
+                m_decisions->updateDecisionStatus(decision.uid, "accepted",
+                                                  std::optional<std::string>(
+                                                      decision.candidateJson));
+                break;
+            }
+
     Audit::record({"user", {}, "route.confirmed", "route", updated.uid.value(), "{}"});
     return Result<Domain::Route, ApplicationError>::success(std::move(updated));
 }

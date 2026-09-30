@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 
 #include "application/audit/Audit.h"
 #include "application/foundation/ContractValidator.h"
@@ -21,9 +22,32 @@ constexpr int kKeySubQuestions = 2;   // 范围依据 + 方法/可行性依据�
 
 // 契约字段说明（写入提示词；AI 只能输出这些字段，不得虚构引用）
 const char *routeContractHint = R"TEXT(
-输出 JSON（route_proposal_v1）：{"goal_uid":"<保持原值>","stages":[{"title":"阶段名"}],
-"rationale":"拆分依据（引用用户目标/知识库/现实约束）","evidence_summary":"所用知识来源摘要",
+你正在把用户的宏伟目标拆成一条面向就业或实际成果的路线。第一层只能给出 3～5 个粗粒度阶段，
+每个阶段代表一组完整能力或一个结果阶段；不要把命令、工具、脚本、日志、监控、章节等细知识点
+平铺成一级阶段。细知识点只能写入该阶段的 description 和 key_contents。优先采用“基础与必要知识
+→进阶工作能力→项目实战”的最短实用路线，不为理论完整性增加底层课程。再判断阶段之间哪些必须
+先完成、哪些可以并行。
+输出 JSON（route_proposal_v1）：{"goal_uid":"<保持原值>","stages":[
+{"title":"粗粒度路线阶段","description":"这一阶段要达到的实用结果",
+"key_contents":["阶段内部的必要内容，不得提升为一级阶段"],
+"relationship":"start|after|parallel","depends_on":["前置阶段标题"]}],
+"rationale":"阶段划分与顺序依据（引用用户目标/知识库/现实约束）","evidence_summary":"所用知识来源摘要",
 "assumptions":{},"source_mode":"grounded|partially_grounded|ungrounded"}
+)TEXT";
+
+const char *stageContractHint = R"TEXT(
+你正在为一条已确认路线的其中一个粗粒度阶段做落地安排，回答「如何真正完成这一阶段」。
+必须现实、可操作、可验证：不要把细碎知识点铺成任务海洋，内部任务要少而实；
+criteria 必须是可核对的完成标准，不得写「认真学完」「深入理解」等无法验证的表述；
+suggested_materials 的 item_uid 只能取自提示词给出的候选资料列表，不得凭空编造；
+stage_uid 必须原样回显。
+输出 JSON（stage_detail_v1）：{"stage_uid":"<保持原值>","outcomes":[
+{"description":"完成本阶段后可验证的结果"}],"tasks":[{"sequence_no":1,"title":"内部任务名",
+"description":"任务内容与做法","estimated_effort_min":整数分钟}],"projects":[
+{"title":"项目/练习名","description":"做法","verifiable_result":"可观察的产出"}],
+"criteria":[{"description":"可核对的完成标准"}],"suggested_materials":[
+{"item_uid":"候选资料列表中的条目 uid","reason":"推荐理由"}],"rationale":"这样安排的依据",
+"source_mode":"grounded|partially_grounded|ungrounded"}
 )TEXT";
 
 const char *melContractHint = R"TEXT(
@@ -121,11 +145,16 @@ AiPlanningUseCases::calibrate(const std::string &purpose, const std::string &que
         return Result<CalibrationContext, ApplicationError>::failure(retrieved.error());
 
     // 知识支持判定（DR-028 确定性初版：以关键子问题覆盖为准；
-    // 确定性规则不宣称充分覆盖——AI 评估部分接入后升级）
+    // 确定性规则不宣称充分覆盖——AI 评估部分接入后升级）。
+    // 命中相关性阈值:词法 sigmoid 好匹配约 0.8+,向量余弦 ≥0.6 才有
+    // 语义意义;一条弱相关命中不应把 ungrounded 升为 partially_grounded
+    // (hits 已按 finalScore 降序,front() 即 top-1)
+    const double topScore = retrieved.value().hits.empty()
+                                ? 0.0
+                                : retrieved.value().hits.front().finalScore;
     SupportAssessmentInput assessmentInput;
     assessmentInput.totalKeySubQuestions = keySubQuestions;
-    assessmentInput.coveredSubQuestions =
-        retrieved.value().hits.empty() ? 0 : 1;   // 有实质命中 = 部分覆盖
+    assessmentInput.coveredSubQuestions = topScore >= 0.6 ? 1 : 0;
     const auto support = SupportAssessor::assess(assessmentInput);
 
     // 知识快照（同内容幂等；后续复现不受版本漂移影响）
@@ -154,11 +183,49 @@ AiPlanningUseCases::calibrate(const std::string &purpose, const std::string &que
     CalibrationContext context;
     context.config = std::move(config.value());
     context.knowledgeVersionsJson = versionsJson;
-    context.knowledgeSummary = retrieved.value().hits.empty()
-                                   ? "[]"
-                                   : "{\"hits\":"
-                                         + std::to_string(retrieved.value().hits.size())
-                                         + "}";
+    context.hits = retrieved.value().hits;   // 阶段详情资料候选集（提示词与校验同源）
+    // 知识内容注入：模型必须看到命中条目的标题/摘要才能引用知识。
+    // 此前只传 {"hits":N}，模型看不到任何内容却被打 partially_grounded
+    // 标签（真机验证暴露）——top-N 截断控制提示词体积
+    QJsonArray items;
+    const int maxItems = 8;
+    for (const auto &hit : retrieved.value().hits) {
+        if (items.size() >= maxItems)
+            break;
+        const auto parsed = Domain::Uid::parse(hit.ownerUid);
+        if (!parsed)
+            continue;
+        const auto item = m_knowledge.findItem(*parsed);
+        if (!item)
+            continue;
+        std::string summary;
+        const auto versions = m_knowledge.versionsOf(item->uid);
+        if (!versions.empty()) {
+            const std::string current = item->currentVersionUid
+                                            ? *item->currentVersionUid
+                                            : std::string();
+            for (const auto &version : versions)
+                if (version.uid.value() == current) {
+                    summary = version.summary;
+                    break;
+                }
+        }
+        QJsonObject entry;
+        entry.insert(QStringLiteral("type"),
+                     QString::fromStdString(Domain::toString(item->libraryType)));
+        entry.insert(QStringLiteral("title"), QString::fromStdString(item->title));
+        entry.insert(QStringLiteral("summary"),
+                     QString::fromStdString(summary).left(300));
+        items.append(entry);
+    }
+    QJsonObject knowledgeSummary;
+    knowledgeSummary.insert(QStringLiteral("hits"),
+                            static_cast<int>(retrieved.value().hits.size()));
+    knowledgeSummary.insert(QStringLiteral("items"), items);
+    context.knowledgeSummary =
+        QString::fromUtf8(
+            QJsonDocument(knowledgeSummary).toJson(QJsonDocument::Compact))
+            .toStdString();
     context.snapshotUid = snapshot.value().uid.value();
     context.sourceMode =
         support.level == Domain::KnowledgeSupportLevel::Grounded
@@ -222,21 +289,25 @@ Result<AiPlanningUseCases::ProposalOutput, ApplicationError> AiPlanningUseCases:
     output.knowledgeSnapshotUid = calibration.snapshotUid;
     output.sourceMode = calibration.sourceMode;
     output.userText = structured;
+    output.jobUid = executed.value().uid.value();
     return Result<ProposalOutput, ApplicationError>::success(std::move(output));
 }
 
 Result<AiPlanningUseCases::ProposalOutput, ApplicationError>
 AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
-                                          const Domain::Uid &goalUid)
+                                          const Domain::Uid &goalUid,
+                                          const std::string &userGuidance)
 {
     const auto goal = m_goals.findByUid(goalUid);
     if (!goal)
         return Result<ProposalOutput, ApplicationError>::failure(
             {ErrorCode::NotFound, "goal not found", {}, false});
 
+    // 知识召回不过滤领域码:论文/方法/贴士的领域为 research.NN.slug,
+    // 限定 learning 会让真实文献恒不可命中(与 askAdvisor 同族缺陷)
     auto calibration = calibrate("route_planning",
                                  goal->title + " " + goal->description,
-                                 "{\"domain_code\":\"learning\"}", kKeySubQuestions);
+                                 "{}", kKeySubQuestions);
     if (!calibration)
         return Result<ProposalOutput, ApplicationError>::failure(calibration.error());
 
@@ -252,7 +323,8 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
     const std::string payload =
         "{\"goal_uid\":\"" + goalUid.value() + "\",\"goal_title\":\""
         + jsonEscape(goal->title) + "\",\"goal_description\":\""
-        + jsonEscape(goal->description) + "\",\"_instruction\":\"" + instruction
+        + jsonEscape(goal->description) + "\",\"user_guidance\":\""
+        + jsonEscape(userGuidance) + "\",\"_instruction\":\"" + instruction
         + "\",\"_state\":" + calibration.value().stateContextJson + ",\"_knowledge\":"
         + calibration.value().knowledgeSummary + "}";
 
@@ -264,11 +336,11 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
     // 硬约束校验（引用完整性/结构/领域参数）
     DomainRegistry registry(m_manifests);
     const auto config = registry.load("learning");
+    if (!config)
+        return Result<ProposalOutput, ApplicationError>::failure(config.error());
     DecisionValidator validator(m_goals);
     const auto outcome =
-        config ? validator.validate("route_proposal_v1", job.value().userText,
-                                    config.value(), userId)
-               : DecisionValidator::ValidationOutcome{};
+        validator.validate("route_proposal_v1", job.value().userText, config.value(), userId);
     if (!outcome.ok) {
         std::string errors;
         for (const auto &error : outcome.errors)
@@ -281,7 +353,7 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
     // 候选落库（AI 生成的是候选；用户确认后成为当前路线）
     const QJsonObject proposal =
         QJsonDocument::fromJson(QByteArray::fromStdString(job.value().userText)).object();
-    RouteUseCases routeUseCases(m_routes, m_goals, m_uids, m_clock);
+    RouteUseCases routeUseCases(m_routes, m_goals, m_uids, m_clock, &m_decisions);
     RouteUseCases::ProposeInput input;
     input.goalId = goalUid;
     input.rationale = proposal.value(QStringLiteral("rationale")).toString().toStdString();
@@ -294,10 +366,21 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
     input.createdBy = "ai";
     int sequence = 0;
     for (const auto &value : proposal.value(QStringLiteral("stages")).toArray()) {
+        const QJsonObject stageObject = value.toObject();
         Domain::RouteStage stage;
-        stage.title = value.toObject().value(QStringLiteral("title")).toString().toStdString();
+        stage.title = stageObject.value(QStringLiteral("title")).toString().toStdString();
+        stage.description = stageObject.value(QStringLiteral("description")).toString().toStdString();
         stage.sequenceNo = sequence++;
-        stage.completionRuleJson = std::string("{}");
+        QJsonObject relationship;
+        relationship.insert(QStringLiteral("relationship"),
+                            stageObject.value(QStringLiteral("relationship")));
+        relationship.insert(QStringLiteral("depends_on"),
+                            stageObject.value(QStringLiteral("depends_on")));
+        relationship.insert(QStringLiteral("key_contents"),
+                            stageObject.value(QStringLiteral("key_contents")));
+        stage.completionRuleJson =
+            QString::fromUtf8(QJsonDocument(relationship).toJson(QJsonDocument::Compact))
+                .toStdString();
         input.stages.push_back(std::move(stage));
     }
     const auto proposed = routeUseCases.proposeRoute(input);
@@ -332,6 +415,218 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
 }
 
 Result<AiPlanningUseCases::ProposalOutput, ApplicationError>
+AiPlanningUseCases::generateStageDetail(const Domain::Uid &userId, const Domain::Uid &stageUid,
+                                        const std::string &userGuidance)
+{
+    // 门禁：阶段必须属于已确认/进行中的路线——候选路线会随重新生成而变，
+    // 在候选阶段上做详情安排是浪费用户决策
+    const auto location = m_routes.locateStage(stageUid);
+    if (!location)
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::NotFound, "stage not found", {}, false});
+    if (location->routeStatus != Domain::RouteStatus::Confirmed
+        && location->routeStatus != Domain::RouteStatus::Active)
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Conflict, "stage detail requires a confirmed route", {}, false});
+
+    // key_contents 从 completionRuleJson 解析（AI 生成路线时打包的关系 JSON）
+    std::string keyContentsText;
+    {
+        const QJsonObject relation =
+            QJsonDocument::fromJson(
+                QByteArray::fromStdString(location->stage.completionRuleJson))
+                .object();
+        const auto contents = relation.value(QStringLiteral("key_contents")).toArray();
+        QStringList items;
+        for (const auto &value : contents)
+            items.append(value.toString());
+        keyContentsText = items.join(QStringLiteral(" ")).toStdString();
+    }
+
+    auto calibration = calibrate("stage_detail",
+                                 location->stage.title + " "
+                                     + location->stage.description + " " + keyContentsText,
+                                 "{}", kKeySubQuestions);
+    if (!calibration)
+        return Result<ProposalOutput, ApplicationError>::failure(calibration.error());
+
+    StateContextBuilder contextBuilder(m_states, m_clock);
+    const auto stateContext = contextBuilder.build(userId, m_clock.utcIso());
+    calibration.value().stateContextJson =
+        stateContext ? stateContext.value() : std::string("{}");
+
+    // 资料候选集：检索命中条目 top-8（提示词候选 = 校验子集，同一来源同一过滤）
+    QJsonArray materialCandidates;
+    {
+        QSet<QString> seen;
+        const int maxCandidates = 8;
+        for (const auto &hit : calibration.value().hits) {
+            if (materialCandidates.size() >= maxCandidates)
+                break;
+            const auto parsed = Domain::Uid::parse(hit.ownerUid);
+            if (!parsed)
+                continue;
+            const auto item = m_knowledge.findItem(*parsed);
+            if (!item)
+                continue;
+            const QString uidText = QString::fromStdString(item->uid.value());
+            if (seen.contains(uidText))
+                continue;
+            seen.insert(uidText);
+            QJsonObject entry;
+            entry.insert(QStringLiteral("item_uid"), uidText);
+            entry.insert(QStringLiteral("title"), QString::fromStdString(item->title));
+            materialCandidates.append(entry);
+        }
+    }
+    const std::string materialCandidatesJson =
+        QString::fromUtf8(
+            QJsonDocument(materialCandidates).toJson(QJsonDocument::Compact))
+            .toStdString();
+
+    // 所属路线版本依据（供 AI 理解本阶段在路线中的定位）
+    std::string routeRationale;
+    for (const auto &version : m_routes.versionsOf(location->routeUid))
+        if (version.versionNo == location->routeVersionNo)
+            routeRationale = version.rationale;
+
+    const std::string instruction =
+        jsonEscape(protocolPrompt(calibration.value().config) + std::string(" ")
+                   + std::string(stageContractHint));
+    const std::string payload =
+        "{\"stage_uid\":\"" + stageUid.value() + "\",\"stage_title\":\""
+        + jsonEscape(location->stage.title) + "\",\"stage_description\":\""
+        + jsonEscape(location->stage.description) + "\",\"key_contents\":\""
+        + jsonEscape(keyContentsText) + "\",\"route_rationale\":\""
+        + jsonEscape(routeRationale) + "\",\"user_guidance\":\""
+        + jsonEscape(userGuidance) + "\",\"_instruction\":\"" + instruction
+        + "\",\"_state\":" + calibration.value().stateContextJson + ",\"_knowledge\":"
+        + calibration.value().knowledgeSummary + ",\"_material_candidates\":"
+        + materialCandidatesJson + "}";
+
+    const auto job = runJob("stage_detail", "stage_detail_v1", payload,
+                            calibration.value());
+    if (!job)
+        return Result<ProposalOutput, ApplicationError>::failure(job.error());
+
+    // 硬约束（数量门禁/标题/枚举；契约校验在 runJob 内）
+    DomainRegistry registry(m_manifests);
+    const auto config = registry.load("learning");
+    if (!config)
+        return Result<ProposalOutput, ApplicationError>::failure(config.error());
+    DecisionValidator validator(m_goals);
+    const auto outcome =
+        validator.validate("stage_detail_v1", job.value().userText, config.value(), userId);
+    if (!outcome.ok) {
+        std::string errors;
+        for (const auto &error : outcome.errors)
+            errors += error + ";";
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "candidate rejected by hard constraints: " + errors, {},
+             false});
+    }
+
+    const QJsonObject proposal =
+        QJsonDocument::fromJson(QByteArray::fromStdString(job.value().userText)).object();
+
+    // 用例层校验：stage_uid 回显 + 资料子集（候选集是运行时检索产物，
+    // 不进 DecisionValidator 构造器）
+    if (proposal.value(QStringLiteral("stage_uid")).toString().toStdString()
+        != stageUid.value())
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "stage_uid does not match the request", {}, false});
+    QSet<QString> allowedItemUids;
+    for (const auto &value : materialCandidates)
+        allowedItemUids.insert(value.toObject().value(QStringLiteral("item_uid")).toString());
+    for (const auto &value : proposal.value(QStringLiteral("suggested_materials")).toArray()) {
+        const QString itemUid = value.toObject().value(QStringLiteral("item_uid")).toString();
+        if (itemUid.isEmpty() || !allowedItemUids.contains(itemUid))
+            return Result<ProposalOutput, ApplicationError>::failure(
+                {ErrorCode::Validation,
+                 "suggested material not in retrieval candidates (fabricated reference)", {},
+                 false});
+    }
+
+    // 全成功才写：详情新版本（version_no 递增，只追加）+ 资料 upsert +
+    // 决策记录（Pending，确认后由 RouteStageDetailUseCases 接 accepted）+ 审计
+    int nextVersion = 1;
+    for (const auto &version : m_routes.stageDetailVersionsOf(stageUid))
+        nextVersion = std::max(nextVersion, version.versionNo + 1);
+
+    const auto compactArray = [](const QJsonArray &array) {
+        return QString::fromUtf8(
+                   QJsonDocument(array).toJson(QJsonDocument::Compact))
+            .toStdString();
+    };
+    Domain::StageDetailVersion detail;
+    detail.stageUid = stageUid;
+    detail.versionNo = nextVersion;
+    detail.outcomesJson = compactArray(proposal.value(QStringLiteral("outcomes")).toArray());
+    detail.tasksJson = compactArray(proposal.value(QStringLiteral("tasks")).toArray());
+    detail.projectsJson = compactArray(proposal.value(QStringLiteral("projects")).toArray());
+    detail.criteriaJson = compactArray(proposal.value(QStringLiteral("criteria")).toArray());
+    detail.rationale = proposal.value(QStringLiteral("rationale")).toString().toStdString();
+    detail.createdBy = "ai";
+    const auto savedDetail = m_routes.insertStageDetail(detail);
+    if (!savedDetail)
+        return Result<ProposalOutput, ApplicationError>::failure(savedDetail.error());
+
+    int suggested = 0;
+    int rank = 0;
+    for (const auto &value : proposal.value(QStringLiteral("suggested_materials")).toArray()) {
+        const QJsonObject materialObject = value.toObject();
+        const std::string itemUid =
+            materialObject.value(QStringLiteral("item_uid")).toString().toStdString();
+        const auto parsedItem = Domain::Uid::parse(itemUid);
+        if (!parsedItem)
+            continue;   // 子集校验已通过，此处仅防御
+        std::string versionUid = itemUid;
+        if (const auto item = m_knowledge.findItem(*parsedItem))
+            if (item->currentVersionUid && !item->currentVersionUid->empty())
+                versionUid = *item->currentVersionUid;
+        Domain::StageMaterialBinding material;
+        material.stageUid = stageUid;
+        material.knowledgeItemUid = itemUid;
+        material.knowledgeVersionUid = versionUid;
+        material.rank = rank++;
+        material.reason = materialObject.value(QStringLiteral("reason")).toString().toStdString();
+        material.userChoice = "pending";
+        material.createdBy = "ai";
+        if (m_routes.upsertStageMaterial(material).ok)
+            ++suggested;
+    }
+
+    Domain::DecisionRecord decision;
+    decision.uid = m_uids.next();
+    decision.decisionType = "stage_detail";
+    decision.aggregateType = "route_stage";
+    decision.aggregateUid = stageUid.value();
+    decision.inputSnapshotJson =
+        "{\"stage\":\"" + stageUid.value() + "\",\"snapshot\":\""
+        + calibration.value().snapshotUid + "\"}";
+    decision.candidateJson = job.value().userText;
+    decision.rationale = detail.rationale;
+    decision.sourceMode = calibration.value().sourceMode;
+    decision.userStatus = Domain::DecisionUserStatus::Pending;
+    decision.createdAt = m_clock.utcIso();
+    // 关联底层任务(物理删除联动先例,与 askAdvisor 同款)
+    decision.jobUid = job.value().jobUid;
+    const auto savedDecision = m_decisions.insertDecision(decision);
+    if (!savedDecision.ok)
+        return Result<ProposalOutput, ApplicationError>::failure(savedDecision.error);
+
+    Audit::record({"ai", {}, "route.stage_detail_generated", "route_stage",
+                   stageUid.value(),
+                   "{\"version\":" + std::to_string(nextVersion)
+                       + ",\"materials\":" + std::to_string(suggested) + "}"});
+
+    ProposalOutput output = job.value();
+    output.aggregateUid = stageUid.value();
+    output.decisionUid = decision.uid.value();
+    return Result<ProposalOutput, ApplicationError>::success(std::move(output));
+}
+
+Result<AiPlanningUseCases::ProposalOutput, ApplicationError>
 AiPlanningUseCases::generateMelProposal(const Domain::Uid &userId,
                                         const Domain::Uid &goalUid,
                                         const std::optional<Domain::Uid> &routeVersionUid)
@@ -341,8 +636,8 @@ AiPlanningUseCases::generateMelProposal(const Domain::Uid &userId,
         return Result<ProposalOutput, ApplicationError>::failure(
             {ErrorCode::NotFound, "goal not found", {}, false});
 
-    auto calibration = calibrate("mel_planning", goal->title,
-                                 "{\"domain_code\":\"learning\"}", kKeySubQuestions);
+    // 知识召回不过滤领域码(同 route_planning/askAdvisor)
+    auto calibration = calibrate("mel_planning", goal->title, "{}", kKeySubQuestions);
     if (!calibration)
         return Result<ProposalOutput, ApplicationError>::failure(calibration.error());
 
@@ -372,11 +667,11 @@ AiPlanningUseCases::generateMelProposal(const Domain::Uid &userId,
 
     DomainRegistry registry(m_manifests);
     const auto config = registry.load("learning");
+    if (!config)
+        return Result<ProposalOutput, ApplicationError>::failure(config.error());
     DecisionValidator validator(m_goals);
     const auto outcome =
-        config ? validator.validate("mel_proposal_v1", job.value().userText,
-                                    config.value(), userId)
-               : DecisionValidator::ValidationOutcome{};
+        validator.validate("mel_proposal_v1", job.value().userText, config.value(), userId);
     if (!outcome.ok) {
         std::string errors;
         for (const auto &error : outcome.errors)
@@ -518,7 +813,8 @@ Result<int, ApplicationError> AiPlanningUseCases::generateMethodSuggestions(
     std::string payload =
         "{\"mel_uid\":\"" + melUid.value() + "\",\"_instruction\":\""
         + jsonEscape(std::string(methodContractHint) + " 候选方法版本 uid："
-                     + calibration.value().knowledgeVersionsJson)
+                     + calibration.value().knowledgeVersionsJson + " 候选方法内容："
+                     + calibration.value().knowledgeSummary)
         + "\",\"tasks\":[";
     for (size_t i = 0; i < tasks.size(); ++i) {
         if (i)
@@ -581,8 +877,9 @@ Result<AiPlanningUseCases::ProposalOutput, ApplicationError>
 AiPlanningUseCases::askAdvisor(const Domain::Uid &userId, const std::string &question)
 {
     Q_UNUSED(userId);
-    auto calibration = calibrate("advisor", question, "{\"domain_code\":\"learning\"}",
-                                 kKeySubQuestions);
+    // 咨询检索整个知识库(不限领域码):论文/方法/贴士的领域为 research.NN.slug,
+    // 限定 learning 会让真实文献全部不可命中(真机验证暴露)
+    auto calibration = calibrate("advisor", question, "{}", kKeySubQuestions);
     if (!calibration)
         return Result<ProposalOutput, ApplicationError>::failure(calibration.error());
 
@@ -611,6 +908,8 @@ AiPlanningUseCases::askAdvisor(const Domain::Uid &userId, const std::string &que
         calibration.value().hasMaterialConflict ? "{\"conflict\":true}" : "{}";
     decision.userStatus = Domain::DecisionUserStatus::NotRequired;
     decision.createdAt = m_clock.utcIso();
+    // 关联底层任务:物理删除回答时连同任务/调用记录一起(用户决策)
+    decision.jobUid = job.value().jobUid;
     const auto savedDecision = m_decisions.insertDecision(decision);
     if (!savedDecision.ok)
         return Result<ProposalOutput, ApplicationError>::failure(savedDecision.error);

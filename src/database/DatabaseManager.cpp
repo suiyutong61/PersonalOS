@@ -65,9 +65,16 @@ bool DatabaseManager::open()
 
     // 连接级 PRAGMA（WAL 见 3.3.2；外键约束见 README 3.3.2 建表纪律）
     QSqlQuery pragma(db);
-    pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+    if (!pragma.exec(QStringLiteral("PRAGMA foreign_keys = ON"))) {
+        m_lastError = QStringLiteral("PRAGMA foreign_keys 失败: %1")
+                          .arg(pragma.lastError().text());
+        db.close();
+        return false;
+    }
     pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
     pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+    // UI 导入与后台向量回填可能并发写，短锁等待避免 SQLITE_BUSY
+    pragma.exec(QStringLiteral("PRAGMA busy_timeout = 5000"));
 
     if (!applyMigrations()) {
         db.close();

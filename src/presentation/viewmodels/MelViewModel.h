@@ -18,9 +18,12 @@ class MelViewModel : public QObject
     Q_PROPERTY(ListItemModel *tasksModel READ tasksModel CONSTANT)
     Q_PROPERTY(QString melTitle READ melTitle NOTIFY melChanged)
     Q_PROPERTY(QString melState READ melState NOTIFY melChanged)
+    Q_PROPERTY(QString melStateLabel READ melStateLabel NOTIFY melChanged)
     Q_PROPERTY(QString melDeadline READ melDeadline NOTIFY melChanged)
     Q_PROPERTY(QString melProgress READ melProgress NOTIFY melChanged)
     Q_PROPERTY(QString melUid READ melUid NOTIFY melChanged)
+    // aiState 必须作为属性暴露:QML 用它门控 AI 按钮(防连点并发管线)
+    Q_PROPERTY(QString aiState READ aiState NOTIFY aiStateChanged)
     QML_ELEMENT
 
 public:
@@ -41,6 +44,7 @@ public:
     ListItemModel *tasksModel() { return &m_tasksModel; }
     QString melTitle() const { return m_melTitle; }
     QString melState() const { return m_melState; }
+    QString melStateLabel() const { return m_melStateLabel; }
     QString melDeadline() const { return m_melDeadline; }
     QString melProgress() const { return m_melProgress; }
     QString melUid() const { return m_melUid; }
@@ -63,6 +67,7 @@ private:
     QString m_melUid;
     QString m_melTitle;
     QString m_melState;
+    QString m_melStateLabel;
     QString m_melDeadline;
     QString m_melProgress;
     int m_melRevision = 1;

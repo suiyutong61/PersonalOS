@@ -4,6 +4,8 @@
 #include <string>
 
 #include "application/foundation/Result.h"
+#include "application/ports/EmbeddingPort.h"
+#include "application/ports/EmbeddingVectorStore.h"
 #include "application/ports/KnowledgeRepository.h"
 #include "application/ports/SearchIndexPort.h"
 #include "application/ports/UuidPort.h"
@@ -25,6 +27,7 @@ public:
         Domain::LibraryType libraryType;
         std::string title;
         std::string domainCode;
+        std::string referenceCode;   // 编号(如 7.41 / 7.41-M1),可空
         std::string summary;
         std::string claimsJson = "[]";
         std::string applicabilityJson = "{}";
@@ -52,7 +55,8 @@ public:
     };
 
     KnowledgeUseCases(KnowledgeRepository &repo, SearchIndexPort &searchIndex, UuidPort &uids,
-                       const Domain::Clock &clock);
+                       const Domain::Clock &clock, EmbeddingPort *embeddings = nullptr,
+                       EmbeddingVectorStore *vectorStore = nullptr);
 
     // 导入新知识：条目 + 首个版本 + 来源 + 类型详情一次完成
     Result<ImportOutput, ApplicationError> importKnowledge(const ImportInput &input);
@@ -79,6 +83,11 @@ public:
                                                               int expectedRevision,
                                                               Domain::KnowledgeStatus status);
 
+    // 物理删除(2026-09-29 用户决策:仅限 AI 生成候选;资格校验在
+    // PaperAnalysisUseCases::purgeGeneratedCandidates)。级联删除
+    // 条目/版本/类型详情/步骤/关系并同步移除 FTS 索引行。
+    Result<int, ApplicationError> purgeItem(const Domain::Uid &itemUid);
+
     // 建立有类型知识关系
     Result<Domain::KnowledgeRelation, ApplicationError> relate(
         const Domain::KnowledgeRelation &relation);
@@ -88,10 +97,21 @@ public:
         const Domain::EvidenceLink &link);
 
 private:
+    // 索引侧向量（可选）：两端齐全且 modelId 非空时才生成条目向量；
+    // 推理失败静默跳过（DR-013：向量不可用不阻断导入/检索）
+    std::optional<std::vector<float>> embedForIndex(const std::string &title,
+                                                    const std::string &summary) const;
+    // 事务内 upsert（失败仅警告，不阻断导入）
+    void tryUpsertVector(const std::string &ownerType, const std::string &ownerUid,
+                         const std::string &contentHash,
+                         const std::optional<std::vector<float>> &vector) const;
+
     KnowledgeRepository &m_repo;
     SearchIndexPort &m_searchIndex;
     UuidPort &m_uids;
     const Domain::Clock &m_clock;
+    EmbeddingPort *m_embeddings = nullptr;
+    EmbeddingVectorStore *m_vectorStore = nullptr;
 };
 
 } // namespace PersonOS::Application

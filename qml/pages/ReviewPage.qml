@@ -13,6 +13,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: ThemeTokens.spacingLg
@@ -33,7 +36,8 @@ Item {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: vm.pageState === "ready"
+            visible: vm.pageState === "ready" || vm.pageState === "conflict"
+                || vm.pageState === "error" || vm.pageState === "offline"
             spacing: ThemeTokens.spacingSm
 
             // 复盘内容（区分执行完成与能力掌握；不合并总分）
@@ -53,7 +57,7 @@ Item {
                             color: ThemeTokens.textPrimary
                         }
                         StatusBadge {
-                            text: vm.reviewState
+                            text: vm.reviewStateLabel
                             tone: vm.reviewState === "closed" ? "success" : "neutral"
                         }
                     }
@@ -107,13 +111,15 @@ Item {
                         model: vm.questionnaireModel
                         delegate: RowLayout {
                             required property string uid
+                            required property string title
                             required property string subtitle
                             required property string badgeTone
+                            required property int value
                             width: questionnaireList.width
                             height: 34
                             Text {
                                 Layout.fillWidth: true
-                                text: uid
+                                text: title
                                 font.pixelSize: ThemeTokens.fontSizeBody
                                 color: ThemeTokens.textPrimary
                             }
@@ -125,7 +131,8 @@ Item {
                                 visible: badgeTone === "info"
                                 from: 1
                                 to: 5
-                                value: 3
+                                // 绑定模型值:整模替换后不重置、不悄悄改回已存值
+                                value: value
                                 onValueChanged: vm.setQuestionnaireChoice(uid, "answer", value)
                             }
                             AppButton {

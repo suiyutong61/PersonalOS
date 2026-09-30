@@ -28,6 +28,8 @@ public:
     std::vector<Domain::KnowledgeVersion> versionsOf(const Domain::Uid &itemUid) override;
 
     Application::SaveResult insertSource(const Domain::SourceRecord &source) override;
+    std::optional<Domain::SourceRecord> findSourceByContentHash(
+        const std::string &contentHash) override;
     Application::SaveResult insertFragment(const Domain::EvidenceFragment &fragment) override;
     Application::SaveResult insertEvidenceLink(const Domain::EvidenceLink &link) override;
 
@@ -40,6 +42,15 @@ public:
     Application::SaveResult insertTipDetail(const Domain::TipDetail &detail) override;
     Application::SaveResult insertPlanDetail(const Domain::PlanDetail &detail) override;
     Application::SaveResult insertMethodStep(const Domain::MethodStep &step) override;
+
+    std::optional<Domain::MethodDetail> methodDetailOf(const Domain::Uid &itemUid) override;
+    std::vector<Domain::MethodStep> methodStepsOf(const Domain::Uid &versionUid) override;
+    std::vector<Domain::EvidenceFragment> evidenceFragmentsOf(
+        const Domain::Uid &versionUid) override;
+    Application::SaveResult deleteItemCascade(const Domain::Uid &uid) override;
+    int countPapersInDomain(const std::string &domainCode) override;
+    int derivedCandidateCount(const Domain::Uid &paperItemUid,
+                              Domain::LibraryType type) override;
 
 private:
     Application::SaveResult writeFailure(const char *operation,

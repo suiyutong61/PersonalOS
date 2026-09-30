@@ -46,6 +46,7 @@ public:
     Application::SaveResult insertJob(const Domain::AiJob &job);
     Application::SaveResult updateJob(const Domain::AiJob &job, int expectedRevision);
     bool existsJobKey(const std::string &idempotencyKey);
+    std::optional<Domain::AiJob> findJobByKey(const std::string &idempotencyKey);
 
     // 调用与上下文
     Application::SaveResult insertCall(const Domain::Uid &callUid,
@@ -69,6 +70,9 @@ public:
     Application::SaveResult updateDecisionStatus(const Domain::Uid &uid,
                                                  const std::string &userStatus,
                                                  const std::optional<std::string> &selectedJson);
+    // 物理删除决策记录及其关联 AI 任务/调用(2026-09-29 用户决策:
+    // 咨询回答可物理删除;ai_context_items 经 ai_calls 级联;审计事件保留)
+    Application::SaveResult deleteDecision(const Domain::Uid &uid);
 
 private:
     Application::SaveResult writeFailure(const char *operation,

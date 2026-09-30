@@ -275,10 +275,80 @@ private slots:
         // 合法路线候选
         const std::string validRoute =
             std::string("{\"rationale\":\"r\",\"evidence_summary\":\"e\",")
-            + "\"stages\":[{\"title\":\"s1\"}],\"goal_uid\":\"" + goodGoalUid
+            + "\"stages\":[{\"title\":\"s1\"},{\"title\":\"s2\"},{\"title\":\"s3\"}],\"goal_uid\":\"" + goodGoalUid
             + "\",\"source_mode\":\"ungrounded\"}";
         QVERIFY(validator.validate("route_proposal_v1", validRoute, learning.value(), userUid)
                     .ok);
+
+        // 合法阶段详情候选（outcomes 1 / tasks 2 / projects 0 / criteria 1）
+        const std::string validStageDetail =
+            std::string("{\"stage_uid\":\"00000000-0000-0000-0000-0000000000ca\",")
+            + "\"outcomes\":[{\"description\":\"o\"}],"
+            + "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\",\"description\":\"d\"},"
+            + "{\"sequence_no\":2,\"title\":\"t2\",\"description\":\"d\"}],"
+            + "\"projects\":[],"
+            + "\"criteria\":[{\"description\":\"c\"}],"
+            + "\"suggested_materials\":[],"
+            + "\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}";
+        const auto validStage = validator.validate("stage_detail_v1", validStageDetail,
+                                                   learning.value(), userUid);
+        QVERIFY2(validStage.ok, [&]() {
+            std::string all;
+            for (const auto &e : validStage.errors)
+                all += e + ";";
+            return all.c_str();
+        }());
+
+        const auto expectStageReject = [&](const std::string &proposal) {
+            const auto result = validator.validate("stage_detail_v1", proposal,
+                                                   learning.value(), userUid);
+            QVERIFY2(!result.ok, "expected stage detail rejection");
+        };
+
+        // tasks 仅 1 条 → 拒绝（门禁 2~6）
+        expectStageReject(
+            "{\"stage_uid\":\"x\",\"outcomes\":[{\"description\":\"o\"}],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\"}],\"projects\":[],"
+            "\"criteria\":[{\"description\":\"c\"}],\"suggested_materials\":[],"
+            "\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}");
+
+        // outcomes 0 条 → 拒绝（门禁 1~4）
+        expectStageReject(
+            "{\"stage_uid\":\"x\",\"outcomes\":[],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\"},{\"sequence_no\":2,\"title\":\"t2\"}],"
+            "\"projects\":[],\"criteria\":[{\"description\":\"c\"}],\"suggested_materials\":[],"
+            "\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}");
+
+        // criteria 6 条 → 拒绝（门禁 1~5）
+        expectStageReject(
+            "{\"stage_uid\":\"x\",\"outcomes\":[{\"description\":\"o\"}],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\"},{\"sequence_no\":2,\"title\":\"t2\"}],"
+            "\"projects\":[],"
+            "\"criteria\":[{\"description\":\"c1\"},{\"description\":\"c2\"},{\"description\":\"c3\"},"
+            "{\"description\":\"c4\"},{\"description\":\"c5\"},{\"description\":\"c6\"}],"
+            "\"suggested_materials\":[],\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}");
+
+        // 缺 stage_uid → 拒绝
+        expectStageReject(
+            "{\"outcomes\":[{\"description\":\"o\"}],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\"},{\"sequence_no\":2,\"title\":\"t2\"}],"
+            "\"projects\":[],\"criteria\":[{\"description\":\"c\"}],\"suggested_materials\":[],"
+            "\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}");
+
+        // 非法 source_mode → 拒绝
+        expectStageReject(
+            "{\"stage_uid\":\"x\",\"outcomes\":[{\"description\":\"o\"}],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"t1\"},{\"sequence_no\":2,\"title\":\"t2\"}],"
+            "\"projects\":[],\"criteria\":[{\"description\":\"c\"}],\"suggested_materials\":[],"
+            "\"rationale\":\"r\",\"source_mode\":\"fake_mode\"}");
+
+        // 任务标题为空 → 拒绝
+        expectStageReject(
+            "{\"stage_uid\":\"x\",\"outcomes\":[{\"description\":\"o\"}],"
+            "\"tasks\":[{\"sequence_no\":1,\"title\":\"\",\"description\":\"d\"},"
+            "{\"sequence_no\":2,\"title\":\"t2\",\"description\":\"d\"}],"
+            "\"projects\":[],\"criteria\":[{\"description\":\"c\"}],\"suggested_materials\":[],"
+            "\"rationale\":\"r\",\"source_mode\":\"ungrounded\"}");
     }
 
 private:

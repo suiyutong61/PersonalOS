@@ -7,6 +7,7 @@
 #include "application/ports/GoalRepository.h"
 #include "application/ports/RouteRepository.h"
 #include "application/ports/UuidPort.h"
+#include "application/usecases/advice/AdviceUseCases.h"   // DecisionStore
 #include "domain/foundation/Clock.h"
 #include "domain/route/Route.h"
 
@@ -35,8 +36,11 @@ public:
         std::string versionUid;         // 版本 UID（确认时写入 current_version_uid）
     };
 
+    // decisions 可空：提供时用户确认路线会把对应的 Pending route_proposal
+    // 决策标记为 accepted（2026-09-30 补全确认决策两条路径的接线）；为空
+    // 时保持旧行为（历史调用点/无 AI 决策场景兼容）。
     RouteUseCases(RouteRepository &routes, GoalRepository &goals, UuidPort &uids,
-                  const Domain::Clock &clock);
+                  const Domain::Clock &clock, DecisionStore *decisions = nullptr);
 
     Result<ProposeOutput, ApplicationError> proposeRoute(const ProposeInput &input);
 
@@ -50,6 +54,7 @@ private:
     GoalRepository &m_goals;
     UuidPort &m_uids;
     const Domain::Clock &m_clock;
+    DecisionStore *m_decisions = nullptr;   // 可空：确认时标记决策 accepted
 };
 
 } // namespace PersonOS::Application

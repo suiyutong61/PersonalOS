@@ -83,8 +83,8 @@ DecisionValidator::ValidationOutcome DecisionValidator::validate(
             outcome.errors.push_back("source_mode must be grounded/partially_grounded/ungrounded");
     } else if (contractType == "route_proposal_v1") {
         const QJsonArray stages = object.value(QStringLiteral("stages")).toArray();
-        if (stages.isEmpty())
-            outcome.errors.push_back("route proposal must contain at least one stage");
+        if (stages.size() < 3 || stages.size() > 5)
+            outcome.errors.push_back("route proposal must contain 3 to 5 coarse stages");
         for (const auto &value : stages) {
             const QString title = value.toObject().value(QStringLiteral("title")).toString();
             if (title.trimmed().isEmpty()) {
@@ -102,6 +102,43 @@ DecisionValidator::ValidationOutcome DecisionValidator::validate(
         if (!sourceMode.isEmpty() && sourceMode != QStringLiteral("grounded")
             && sourceMode != QStringLiteral("partially_grounded")
             && sourceMode != QStringLiteral("ungrounded"))
+            outcome.errors.push_back("source_mode must be grounded/partially_grounded/ungrounded");
+    } else if (contractType == "stage_detail_v1") {
+        // 硬约束：数量门禁与标题非空（阶段存在性/路线确认态/资料子集在用例层，
+        // 需要运行时检索候选集，不引入构造器依赖）
+        const auto countRange = [&](const char *field, int minCount, int maxCount) {
+            const QJsonArray items = object.value(QLatin1String(field)).toArray();
+            if (items.size() < minCount || items.size() > maxCount)
+                outcome.errors.push_back(std::string(field) + " must contain "
+                                         + std::to_string(minCount) + " to "
+                                         + std::to_string(maxCount) + " items");
+            return items;
+        };
+        countRange("outcomes", 1, 4);
+        countRange("criteria", 1, 5);
+        const QJsonArray tasks = countRange("tasks", 2, 6);
+        for (const auto &value : tasks) {
+            const QString title = value.toObject().value(QStringLiteral("title")).toString();
+            if (title.trimmed().isEmpty()) {
+                outcome.errors.push_back("stage task title must not be empty");
+                break;
+            }
+        }
+        const QJsonArray projects = countRange("projects", 0, 3);
+        for (const auto &value : projects) {
+            const QString title = value.toObject().value(QStringLiteral("title")).toString();
+            if (title.trimmed().isEmpty()) {
+                outcome.errors.push_back("stage project title must not be empty");
+                break;
+            }
+        }
+        const QString stageUid = object.value(QStringLiteral("stage_uid")).toString();
+        if (stageUid.trimmed().isEmpty())
+            outcome.errors.push_back("stage_uid is required");
+        const QString stageSourceMode = object.value(QStringLiteral("source_mode")).toString();
+        if (!stageSourceMode.isEmpty() && stageSourceMode != QStringLiteral("grounded")
+            && stageSourceMode != QStringLiteral("partially_grounded")
+            && stageSourceMode != QStringLiteral("ungrounded"))
             outcome.errors.push_back("source_mode must be grounded/partially_grounded/ungrounded");
     } else {
         outcome.errors.push_back("unsupported contract type: " + contractType);

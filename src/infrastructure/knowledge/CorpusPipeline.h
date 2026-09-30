@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "application/foundation/Result.h"
+#include "application/ports/EmbeddingPort.h"
+#include "application/ports/EmbeddingVectorStore.h"
 #include "application/ports/UuidPort.h"
 #include "domain/foundation/Clock.h"
 #include "domain/foundation/Uid.h"
@@ -63,7 +65,8 @@ public:
     };
 
     CorpusPipeline(QSqlDatabase database, Application::UuidPort &uids,
-                   const Domain::Clock &clock);
+                   const Domain::Clock &clock, Application::EmbeddingPort *embeddings = nullptr,
+                   Application::EmbeddingVectorStore *vectorStore = nullptr);
 
     // 处理一个条目：真实下载/读取 + 提取 + 去重 + 导入；任何失败都有明确原因
     Outcome process(const Item &item);
@@ -75,6 +78,8 @@ private:
     QSqlDatabase m_database;
     Application::UuidPort &m_uids;
     const Domain::Clock &m_clock;
+    Application::EmbeddingPort *m_embeddings = nullptr;
+    Application::EmbeddingVectorStore *m_vectorStore = nullptr;
 };
 
 } // namespace PersonOS::Infrastructure

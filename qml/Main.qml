@@ -10,13 +10,23 @@ ApplicationWindow {
     id: window
     width: 1000
     height: 720
-    minimumWidth: 640
-    minimumHeight: 480
+    // 最小宽度 1000(用户指定):等于默认宽度,即窗口横向不可再缩小
+    minimumWidth: 1000
+    // 最小高度 760(用户指定):到达后窗口边框不可再缩小
+    // (右栏 ScrollView 仅作极端情况兜底)
+    minimumHeight: 760
     visible: true
     title: qsTr("Personal OS")
 
     // 设计令牌统一入口（DR-031：页面不得散落常量）
     color: ThemeTokens.bgBase
+
+    // 应用内全局提醒横幅（覆盖层，位于页面之上；Toast 自身 z:100）
+    Toast {
+        anchors.top: parent.top
+        anchors.topMargin: ThemeTokens.spacingLg
+        anchors.horizontalCenter: parent.horizontalCenter
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -72,15 +82,26 @@ ApplicationWindow {
             Layout.fillHeight: true
             currentIndex: 0
 
-            DashboardPage {}
-            GoalRoutePage {}
-            MelPage {}
-            CalendarPage {}
-            ReviewPage {}
-            HistoryAchievementPage {}
-            AdvisorPage {}
-            KnowledgePage {}
-            SettingsPage {}
+            // 切页刷新:各页只在启动时 onCompleted 刷一次,而数据会被
+            // 其他页的业务事件改变(结算→复盘/成就、导入→检索、建目标→
+            // 总览计数),不刷新则跨页数据陈旧、空页成死路
+            onCurrentIndexChanged: {
+                const pages = [dashboardPage, goalRoutePage, melPage, calendarPage,
+                               reviewPage, historyAchievementPage, advisorPage,
+                               knowledgePage, settingsPage]
+                if (currentIndex >= 0 && currentIndex < pages.length)
+                    pages[currentIndex].refresh()
+            }
+
+            DashboardPage { id: dashboardPage }
+            GoalRoutePage { id: goalRoutePage }
+            MelPage { id: melPage }
+            CalendarPage { id: calendarPage }
+            ReviewPage { id: reviewPage }
+            HistoryAchievementPage { id: historyAchievementPage }
+            AdvisorPage { id: advisorPage }
+            KnowledgePage { id: knowledgePage }
+            SettingsPage { id: settingsPage }
         }
     }
 }

@@ -12,6 +12,9 @@ Item {
         id: vm
     }
 
+    // 供 Main.qml 切页刷新调用(数据跨页变更后保持新鲜)
+    function refresh() { vm.refresh() }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: ThemeTokens.spacingLg
@@ -27,6 +30,7 @@ Item {
             pageState: vm.pageState
             message: vm.lastError
             contentCount: vm.remindersModel.count + vm.dueModel.count
+                         + vm.deliveriesModel.count
         }
 
         RowLayout {
@@ -126,10 +130,65 @@ Item {
                     }
                 }
             }
+
+            Card {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                padding: ThemeTokens.spacingSm
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: ThemeTokens.spacingSm
+                    Text {
+                        text: qsTr("投递记录")
+                        font.pixelSize: ThemeTokens.fontSizeSection
+                        font.weight: Font.DemiBold
+                        color: ThemeTokens.textPrimary
+                    }
+                    ListView {
+                        id: deliveryList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: ThemeTokens.spacingXs
+                        model: vm.deliveriesModel
+                        delegate: ColumnLayout {
+                            required property string title
+                            required property string subtitle
+                            required property string badge
+                            required property string badgeTone
+                            width: deliveryList.width
+                            spacing: ThemeTokens.spacingXs
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: title
+                                    font.pixelSize: ThemeTokens.fontSizeBody
+                                    color: ThemeTokens.textPrimary
+                                }
+                                StatusBadge {
+                                    text: badge
+                                    tone: badgeTone
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: subtitle !== ""
+                                text: subtitle
+                                elide: Text.ElideRight
+                                font.pixelSize: ThemeTokens.fontSizeCaption
+                                color: ThemeTokens.textSecondary
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         AppButton {
-            visible: vm.pageState === "ready"
+            // empty 也可见:数据可能由其他页的业务事件产生(切页自动刷新兜底),
+            // 否则空页上零控件成为死路
+            visible: vm.pageState !== "loading"
             text: qsTr("刷新")
             onClicked: vm.refresh()
         }

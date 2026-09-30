@@ -190,6 +190,27 @@ std::vector<Domain::ReminderRule> SqlOperationsRepository::enabledRules()
     return out;
 }
 
+std::vector<Domain::ReminderRule> SqlOperationsRepository::rulesForOwner(
+    const std::string &ownerType, const std::string &ownerUid)
+{
+    std::vector<Domain::ReminderRule> out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT uid FROM reminder_rules_v6 WHERE owner_type=? AND owner_uid=? ORDER BY id"));
+    query.addBindValue(QString::fromStdString(ownerType));
+    query.addBindValue(QString::fromStdString(ownerUid));
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString());
+        if (!uid)
+            continue;
+        if (const auto rule = findRule(*uid))
+            out.push_back(*rule);
+    }
+    return out;
+}
+
 Application::SaveResult SqlOperationsRepository::insertDelivery(
     const Domain::ReminderDelivery &delivery)
 {
@@ -231,14 +252,19 @@ bool SqlOperationsRepository::existsDeliveryKey(const std::string &idempotencyKe
 }
 
 std::vector<Domain::ReminderDelivery> SqlOperationsRepository::pendingDeliveries(
-    const std::string &nowIso)
+    const std::string &nowIso, int maxAttempts)
 {
     std::vector<Domain::ReminderDelivery> out;
     QSqlQuery query(m_database);
+    // failed 且 attempt_count < 上限的行可重选重试；达到上限后终态失败不再重选
+    // （失败只记录，不改变业务状态；DR-024）
     query.prepare(QStringLiteral(
-        "SELECT uid, scheduled_at, delivered_at, status, error, idempotency_key "
-        "FROM reminder_deliveries_v6 WHERE status='pending' AND scheduled_at<=? ORDER BY "
-        "scheduled_at"));
+        "SELECT d.uid, r.uid AS rule_uid, d.scheduled_at, d.delivered_at, d.status, "
+        "d.error, d.idempotency_key, d.attempt_count "
+        "FROM reminder_deliveries_v6 d JOIN reminder_rules_v6 r ON r.id=d.rule_id "
+        "WHERE (d.status='pending' OR (d.status='failed' AND d.attempt_count<?)) "
+        "AND d.scheduled_at<=? ORDER BY d.scheduled_at, d.id"));
+    query.addBindValue(maxAttempts);
     query.addBindValue(QString::fromStdString(nowIso));
     if (!query.exec())
         return out;
@@ -248,13 +274,16 @@ std::vector<Domain::ReminderDelivery> SqlOperationsRepository::pendingDeliveries
             continue;
         Domain::ReminderDelivery delivery;
         delivery.uid = *uid;
-        delivery.scheduledAt = query.value(1).toString().toStdString();
-        if (!query.value(2).isNull())
-            delivery.deliveredAt = query.value(2).toString().toStdString();
-        delivery.status = query.value(3).toString().toStdString();
-        if (!query.value(4).isNull())
-            delivery.error = query.value(4).toString().toStdString();
-        delivery.idempotencyKey = query.value(5).toString().toStdString();
+        if (const auto ruleUid = Domain::Uid::parse(query.value(1).toString().toStdString()))
+            delivery.ruleUid = *ruleUid;
+        delivery.scheduledAt = query.value(2).toString().toStdString();
+        if (!query.value(3).isNull())
+            delivery.deliveredAt = query.value(3).toString().toStdString();
+        delivery.status = query.value(4).toString().toStdString();
+        if (!query.value(5).isNull())
+            delivery.error = query.value(5).toString().toStdString();
+        delivery.idempotencyKey = query.value(6).toString().toStdString();
+        delivery.attemptCount = query.value(7).toInt();
         out.push_back(std::move(delivery));
     }
     return out;
@@ -265,8 +294,10 @@ Application::SaveResult SqlOperationsRepository::markDelivery(
     const std::optional<std::string> &error)
 {
     QSqlQuery query(m_database);
+    // 每次调用视为一次投递尝试：attempt_count+1；delivered 时写 delivered_at
     query.prepare(QStringLiteral(
-        "UPDATE reminder_deliveries_v6 SET status=?, delivered_at=?, error=? WHERE uid=?"));
+        "UPDATE reminder_deliveries_v6 SET status=?, delivered_at=?, error=?, "
+        "attempt_count=attempt_count+1 WHERE uid=?"));
     query.addBindValue(QString::fromStdString(status));
     query.addBindValue(status == "delivered"
                            ? QVariant(QString::fromStdString(formatUtcIso(m_clock.now())))
@@ -276,6 +307,39 @@ Application::SaveResult SqlOperationsRepository::markDelivery(
     if (!query.exec())
         return writeFailure("reminder delivery update failed", query);
     return {true, false, {}};
+}
+
+std::vector<Domain::ReminderDelivery> SqlOperationsRepository::recentDeliveries(int limit)
+{
+    std::vector<Domain::ReminderDelivery> out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT d.uid, r.uid AS rule_uid, d.scheduled_at, d.delivered_at, d.status, "
+        "d.error, d.idempotency_key, d.attempt_count "
+        "FROM reminder_deliveries_v6 d JOIN reminder_rules_v6 r ON r.id=d.rule_id "
+        "ORDER BY d.id DESC LIMIT ?"));
+    query.addBindValue(limit);
+    if (!query.exec())
+        return out;
+    while (query.next()) {
+        const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString());
+        if (!uid)
+            continue;
+        Domain::ReminderDelivery delivery;
+        delivery.uid = *uid;
+        if (const auto ruleUid = Domain::Uid::parse(query.value(1).toString().toStdString()))
+            delivery.ruleUid = *ruleUid;
+        delivery.scheduledAt = query.value(2).toString().toStdString();
+        if (!query.value(3).isNull())
+            delivery.deliveredAt = query.value(3).toString().toStdString();
+        delivery.status = query.value(4).toString().toStdString();
+        if (!query.value(5).isNull())
+            delivery.error = query.value(5).toString().toStdString();
+        delivery.idempotencyKey = query.value(6).toString().toStdString();
+        delivery.attemptCount = query.value(7).toInt();
+        out.push_back(std::move(delivery));
+    }
+    return out;
 }
 
 Application::SaveResult SqlOperationsRepository::insert(const Domain::Achievement &achievement)

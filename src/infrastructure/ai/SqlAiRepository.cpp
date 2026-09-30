@@ -442,6 +442,20 @@ bool SqlAiRepository::existsJobKey(const std::string &idempotencyKey)
     return query.exec() && query.next();
 }
 
+std::optional<Domain::AiJob> SqlAiRepository::findJobByKey(const std::string &idempotencyKey)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT uid FROM ai_jobs_v6 WHERE idempotency_key=? ORDER BY id LIMIT 1"));
+    query.addBindValue(QString::fromStdString(idempotencyKey));
+    if (!query.exec() || !query.next())
+        return std::nullopt;
+    const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString());
+    if (!uid)
+        return std::nullopt;
+    return findJob(*uid);
+}
+
 Application::SaveResult SqlAiRepository::insertCall(const Domain::Uid &callUid,
                                                     const Domain::Uid &jobUid,
                                                     const Domain::Uid &configUid,
@@ -511,8 +525,8 @@ Application::SaveResult SqlAiRepository::insertDecision(const Domain::DecisionRe
     query.prepare(QStringLiteral(
         "INSERT INTO decision_records_v6(uid, decision_type, aggregate_type, aggregate_uid, "
         "input_snapshot_json, candidate_json, selected_json, rationale, source_mode, "
-        "warning_json, user_status, created_at, confirmed_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"));
+        "warning_json, user_status, created_at, confirmed_at, job_uid) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     query.addBindValue(QString::fromStdString(decision.uid.value()));
     query.addBindValue(QString::fromStdString(decision.decisionType));
     query.addBindValue(QString::fromStdString(decision.aggregateType));
@@ -530,8 +544,56 @@ Application::SaveResult SqlAiRepository::insertDecision(const Domain::DecisionRe
     query.addBindValue(decision.confirmedAt
                            ? QVariant(QString::fromStdString(*decision.confirmedAt))
                            : QVariant());
+    query.addBindValue(decision.jobUid
+                           ? QVariant(QString::fromStdString(*decision.jobUid))
+                           : QVariant());
     if (!query.exec())
         return writeFailure("decision insert failed", query);
+    return {true, false, {}};
+}
+
+Application::SaveResult SqlAiRepository::deleteDecision(const Domain::Uid &uid)
+{
+    // 物理删除(2026-09-29 用户决策):连同关联 AI 任务/调用/上下文
+    // (ai_context_items 经 ai_calls 级联);历史审计事件保留。
+    const auto decision = findDecision(uid);
+    if (!decision)
+        return {false, false,
+                {Application::ErrorCode::NotFound, "decision not found", {}, false}};
+    if (!m_database.transaction())
+        return {false, false,
+                {Application::ErrorCode::Storage, "decision delete failed", {}, false}};
+    if (decision->jobUid) {
+        const auto jobId = resolvePk(
+            "SELECT id FROM ai_jobs_v6 WHERE uid=?", *decision->jobUid);
+        if (jobId) {
+            QSqlQuery calls(m_database);
+            calls.prepare(QStringLiteral("DELETE FROM ai_calls_v6 WHERE job_id=?"));
+            calls.addBindValue(*jobId);
+            if (!calls.exec()) {
+                m_database.rollback();
+                return writeFailure("ai calls delete failed", calls);
+            }
+            QSqlQuery job(m_database);
+            job.prepare(QStringLiteral("DELETE FROM ai_jobs_v6 WHERE id=?"));
+            job.addBindValue(*jobId);
+            if (!job.exec()) {
+                m_database.rollback();
+                return writeFailure("ai job delete failed", job);
+            }
+        }
+    }
+    QSqlQuery record(m_database);
+    record.prepare(QStringLiteral("DELETE FROM decision_records_v6 WHERE uid=?"));
+    record.addBindValue(QString::fromStdString(uid.value()));
+    if (!record.exec() || record.numRowsAffected() == 0) {
+        m_database.rollback();
+        return {false, false,
+                {Application::ErrorCode::NotFound, "decision not found", {}, false}};
+    }
+    if (!m_database.commit())
+        return {false, false,
+                {Application::ErrorCode::Storage, "decision delete failed", {}, false}};
     return {true, false, {}};
 }
 
@@ -541,7 +603,7 @@ std::optional<Domain::DecisionRecord> SqlAiRepository::findDecision(const Domain
     query.prepare(QStringLiteral(
         "SELECT uid, decision_type, aggregate_type, aggregate_uid, input_snapshot_json, "
         "candidate_json, selected_json, rationale, source_mode, warning_json, user_status, "
-        "created_at, confirmed_at FROM decision_records_v6 WHERE uid=?"));
+        "created_at, confirmed_at, job_uid FROM decision_records_v6 WHERE uid=?"));
     query.addBindValue(QString::fromStdString(uid.value()));
     if (!query.exec() || !query.next())
         return std::nullopt;
@@ -570,6 +632,8 @@ std::optional<Domain::DecisionRecord> SqlAiRepository::findDecision(const Domain
     decision.createdAt = query.value(11).toString().toStdString();
     if (!query.value(12).isNull())
         decision.confirmedAt = query.value(12).toString().toStdString();
+    if (!query.value(13).isNull())
+        decision.jobUid = query.value(13).toString().toStdString();
     return decision;
 }
 

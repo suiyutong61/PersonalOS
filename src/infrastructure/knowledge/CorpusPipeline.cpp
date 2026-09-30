@@ -23,6 +23,7 @@
 
 #include "application/usecases/knowledge/KnowledgeUseCases.h"
 #include "infrastructure/foundation/QtSystemClock.h"
+#include "infrastructure/knowledge/ManagedTextExtraction.h"
 #include "infrastructure/knowledge/ReliablePdfTextExtractor.h"
 #include "infrastructure/knowledge/SqlKnowledgeFtsIndex.h"
 #include "infrastructure/persistence/SqlKnowledgeRepository.h"
@@ -124,80 +125,6 @@ std::string inferTitle(const std::string &pathOrUrl)
     return name;
 }
 
-std::string extractBioCText(const std::string &json)
-{
-    const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-    if (!document.isArray())
-        return {};
-    QStringList parts;
-    for (const auto &collectionValue : document.array()) {
-        for (const auto &documentValue
-             : collectionValue.toObject().value(QStringLiteral("documents")).toArray()) {
-            for (const auto &passageValue
-                 : documentValue.toObject().value(QStringLiteral("passages")).toArray()) {
-                const QJsonObject passage = passageValue.toObject();
-                const QString section = passage.value(QStringLiteral("infons")).toObject()
-                                            .value(QStringLiteral("section_type")).toString();
-                if (section.compare(QStringLiteral("REF"), Qt::CaseInsensitive) == 0)
-                    continue;
-                const QString text = passage.value(QStringLiteral("text")).toString().trimmed();
-                if (!text.isEmpty())
-                    parts.append(text);
-            }
-        }
-    }
-    return parts.join(QStringLiteral("\n\n")).toStdString();
-}
-
-// Europe PMC 官方 fullTextXML 正文提取：只收 p/title/article-title/abstract
-// 元素的文本，跳过 back/ref-list（参考文献）。
-std::string extractEuropePmcXmlText(const std::string &xml)
-{
-    QXmlStreamReader reader(QByteArray::fromStdString(xml));
-    QStringList parts;
-    QString buffer;
-    int backDepth = 0;
-    int captureDepth = 0;
-    const auto isBackMarker = [](QStringView name) {
-        return name == QLatin1String("back") || name == QLatin1String("ref-list");
-    };
-    const auto isTextElement = [](QStringView name) {
-        return name == QLatin1String("p") || name == QLatin1String("title")
-               || name == QLatin1String("article-title")
-               || name == QLatin1String("abstract");
-    };
-    while (!reader.atEnd()) {
-        switch (reader.readNext()) {
-        case QXmlStreamReader::StartElement:
-            if (isBackMarker(reader.name()))
-                ++backDepth;
-            else if (backDepth == 0 && isTextElement(reader.name()))
-                ++captureDepth;
-            break;
-        case QXmlStreamReader::EndElement:
-            if (isBackMarker(reader.name())) {
-                if (backDepth > 0)
-                    --backDepth;
-                break;
-            }
-            if (captureDepth > 0 && isTextElement(reader.name())) {
-                const QString text = buffer.simplified();
-                if (!text.isEmpty())
-                    parts.append(text);
-                buffer.clear();
-                --captureDepth;
-            }
-            break;
-        case QXmlStreamReader::Characters:
-            if (captureDepth > 0 && backDepth == 0)
-                buffer += reader.text();
-            break;
-        default:
-            break;
-        }
-    }
-    return parts.join(QStringLiteral("\n\n")).toStdString();
-}
 
 // NCBI E-utilities 官方 elink：pubmed→pmc 解析 PMCID。只认 linkname=pubmed_pmc
 // （pubmed_pmc_refs 是"引用该文的文章"，不代表本文有 PMCID）。失败静默返回空。
@@ -230,8 +157,10 @@ QString resolvePmcidViaElink(const QString &pmid)
 } // namespace
 
 CorpusPipeline::CorpusPipeline(QSqlDatabase database, Application::UuidPort &uids,
-                               const Domain::Clock &clock)
-    : m_database(std::move(database)), m_uids(uids), m_clock(clock)
+                               const Domain::Clock &clock, Application::EmbeddingPort *embeddings,
+                               Application::EmbeddingVectorStore *vectorStore)
+    : m_database(std::move(database)), m_uids(uids), m_clock(clock),
+      m_embeddings(embeddings), m_vectorStore(vectorStore)
 {}
 
 std::string CorpusPipeline::sha256Of(const std::string &content)
@@ -417,15 +346,21 @@ CorpusPipeline::Outcome CorpusPipeline::process(const Item &item)
         return outcome;
     }
 
-    // 2) 指纹与去重（同一内容不重复入库）
+    // 2) 指纹与去重（同一内容不重复入库；已归档条目不阻断重新导入）
     outcome.sha256 = sha256Of(raw);
     bool duplicateContent = false;
+    QString duplicateTitle;
     {
         QSqlQuery duplicate(m_database);
         duplicate.prepare(QStringLiteral(
-            "SELECT 1 FROM source_records_v5 WHERE content_hash=? LIMIT 1"));
+            "SELECT i.title FROM knowledge_versions_v5 v "
+            "JOIN knowledge_items_v5 i ON i.id=v.knowledge_item_id "
+            "WHERE v.content_hash=? AND i.status<>? ORDER BY v.id LIMIT 1"));
         duplicate.addBindValue(QString::fromStdString(outcome.sha256));
+        duplicate.addBindValue(QStringLiteral("archived"));
         duplicateContent = duplicate.exec() && duplicate.next();
+        if (duplicateContent)
+            duplicateTitle = duplicate.value(0).toString();
     }
 
     // 3) 文本提取（PDF 用最小提取器；网页剥标签；纯文本直读）
@@ -522,18 +457,24 @@ CorpusPipeline::Outcome CorpusPipeline::process(const Item &item)
     // 已有知识条目不重复导入，但仍允许旧数据在本次运行补齐受管原件。
     if (duplicateContent) {
         outcome.status = "duplicate";
+        if (!duplicateTitle.isEmpty())
+            outcome.message = QStringLiteral("该论文已存在：%1（内容指纹重复，"
+                                             "可在搜索框按标题找到）")
+                                 .arg(duplicateTitle).toStdString();
         return outcome;
     }
 
     // 5) 导入（与产品相同的 KnowledgeUseCases 正式结构 + FTS 索引）
     SqlKnowledgeRepository knowledgeRepo(m_database, m_clock);
     SqlKnowledgeFtsIndex fts(m_database, m_clock);
-    Application::KnowledgeUseCases useCases(knowledgeRepo, fts, m_uids, m_clock);
+    Application::KnowledgeUseCases useCases(knowledgeRepo, fts, m_uids, m_clock, m_embeddings,
+                                            m_vectorStore);
 
     Application::KnowledgeUseCases::ImportInput input;
     input.libraryType = Domain::LibraryType::Paper;
     input.title = item.title.empty() ? inferTitle(outcome.resolvedSource) : item.title;
     input.domainCode = item.domainCode.empty() ? "unclassified" : item.domainCode;
+    input.referenceCode = item.paperNumber;   // 索引来源的论文编号(如 7.41)
     input.summary = text.size() > 2000 ? text.substr(0, 2000) : text;
     input.contentHash = outcome.sha256;
     input.createdBy = "developer";
