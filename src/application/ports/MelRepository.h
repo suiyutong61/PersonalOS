@@ -31,7 +31,9 @@ public:
     // 进度事件（追加式事实；幂等键唯一，DB-06）
     virtual SaveResult appendProgressEvent(const Domain::Mel &mel, const Domain::MelTask &task,
                                            double amount, const std::string &note,
-                                           const std::string &idempotencyKey) = 0;
+                                           const std::string &idempotencyKey,
+                                           const std::string &unit = "progress",
+                                           const std::string &actorType = "user") = 0;
     virtual bool existsIdempotencyKey(const std::string &key) = 0;
     // 是否已发生过某类转移（结算幂等：settle 只结算一次，E2E-05）
     virtual bool hasTransition(const Domain::Uid &melId, const std::string &trigger) = 0;
@@ -50,6 +52,8 @@ public:
         const Domain::Uid &melId) = 0;
     // 活跃 MEL（页面展示用，只读）
     virtual std::vector<Domain::Mel> findActive(const Domain::Uid &userId, int limit) = 0;
+    // 用户的全部 MEL（含候选/历史，最新在前；首个 MEL 候选展示用）
+    virtual std::vector<Domain::Mel> findByUser(const Domain::Uid &userId, int limit) = 0;
 };
 
 } // namespace PersonOS::Application

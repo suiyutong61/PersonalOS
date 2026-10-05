@@ -103,6 +103,40 @@ DecisionValidator::ValidationOutcome DecisionValidator::validate(
             && sourceMode != QStringLiteral("partially_grounded")
             && sourceMode != QStringLiteral("ungrounded"))
             outcome.errors.push_back("source_mode must be grounded/partially_grounded/ungrounded");
+    } else if (contractType == "progress_update_v2") {
+        const QJsonArray updates = object.value(QStringLiteral("task_updates")).toArray();
+        if (updates.isEmpty() || updates.size() > 100)
+            outcome.errors.push_back("task_updates must contain 1 to 100 items");
+        for (const auto &value : updates) {
+            const QJsonObject update = value.toObject();
+            const double progress = update.value(QStringLiteral("progress")).toDouble(-1.0);
+            const QString state = update.value(QStringLiteral("state")).toString();
+            if (update.value(QStringLiteral("task_uid")).toString().isEmpty()
+                || progress < 0.0 || progress > 1.0
+                || (state != QStringLiteral("pending") && state != QStringLiteral("active")
+                    && state != QStringLiteral("completed"))
+                || (progress == 0.0 && state != QStringLiteral("pending"))
+                || (progress > 0.0 && progress < 1.0 && state != QStringLiteral("active"))
+                || (progress == 1.0 && state != QStringLiteral("completed"))) {
+                outcome.errors.push_back("invalid task update");
+                break;
+            }
+        }
+        const double total = object.value(QStringLiteral("mel_progress")).toDouble(-1.0);
+        if (total < 0.0 || total > 1.0)
+            outcome.errors.push_back("mel_progress must be between 0 and 1");
+        if (object.value(QStringLiteral("next_action")).toString().trimmed().isEmpty())
+            outcome.errors.push_back("next_action is required");
+        if (!object.value(QStringLiteral("execution_complete")).isBool())
+            outcome.errors.push_back("execution_complete must be boolean");
+        if (object.value(QStringLiteral("user_text")).toString().trimmed().isEmpty())
+            outcome.errors.push_back("user_text is required");
+        const QString reviewSourceMode =
+            object.value(QStringLiteral("source_mode")).toString();
+        if (!reviewSourceMode.isEmpty() && reviewSourceMode != QStringLiteral("grounded")
+            && reviewSourceMode != QStringLiteral("partially_grounded")
+            && reviewSourceMode != QStringLiteral("ungrounded"))
+            outcome.errors.push_back("source_mode must be grounded/partially_grounded/ungrounded");
     } else if (contractType == "stage_detail_v1") {
         // 硬约束：数量门禁与标题非空（阶段存在性/路线确认态/资料子集在用例层，
         // 需要运行时检索候选集，不引入构造器依赖）

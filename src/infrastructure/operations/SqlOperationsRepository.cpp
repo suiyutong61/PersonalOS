@@ -190,6 +190,22 @@ std::vector<Domain::ReminderRule> SqlOperationsRepository::enabledRules()
     return out;
 }
 
+std::vector<Domain::ReminderRule> SqlOperationsRepository::allRules()
+{
+    std::vector<Domain::ReminderRule> out;
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral("SELECT uid FROM reminder_rules_v6 ORDER BY id")))
+        return out;
+    while (query.next()) {
+        const auto uid = Domain::Uid::parse(query.value(0).toString().toStdString());
+        if (!uid)
+            continue;
+        if (const auto rule = findRule(*uid))
+            out.push_back(*rule);
+    }
+    return out;
+}
+
 std::vector<Domain::ReminderRule> SqlOperationsRepository::rulesForOwner(
     const std::string &ownerType, const std::string &ownerUid)
 {

@@ -22,6 +22,7 @@
 #include "infrastructure/persistence/SqlMelRepository.h"
 #include "infrastructure/persistence/SqlRouteRepository.h"
 #include "infrastructure/persistence/SqlStateRepository.h"
+#include "infrastructure/persistence/SqlUnitOfWork.h"
 
 // AI 服务装配（ViewModel 侧组合根）：真实管线 = Windows 凭据库 + OpenAI 兼容
 // Provider + AiGateway + 混合检索 + 领域清单；测试替身由测试自行组装。
@@ -44,6 +45,7 @@ struct PlanningPipeline
     std::unique_ptr<Infrastructure::SqlRouteRepository> routesRepo;
     std::unique_ptr<Infrastructure::SqlStateRepository> statesRepo;
     std::unique_ptr<Infrastructure::SqlDomainManifestRepository> manifestsRepo;
+    std::unique_ptr<Infrastructure::SqlUnitOfWork> unitOfWork;
     std::unique_ptr<Infrastructure::QtSystemClock> clock;
     std::unique_ptr<Infrastructure::QtUidGenerator> uids;
 };

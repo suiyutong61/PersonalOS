@@ -45,6 +45,31 @@ class TstLocalEmbedding : public QObject
     Q_OBJECT
 
 private slots:
+    void modelIdIncludesFileHashPrefix()
+    {
+        const QString modelPath = embeddingDir() + QStringLiteral("/model-q8.onnx");
+        const QString tokenizerPath = embeddingDir() + QStringLiteral("/tokenizer.json");
+        PersonOS::Infrastructure::LocalEmbeddingProvider provider(modelPath,
+                                                                 tokenizerPath);
+        const std::string id = provider.modelId();
+        QVERIFY2(id.rfind("local:multilingual-e5-small:q8:", 0) == 0,
+                 "model id must carry the base model tag");
+        const std::string second = provider.modelId();
+        QCOMPARE(id, second);   // 缓存一致性
+
+        if (!QFile::exists(modelPath)) {
+            QCOMPARE(provider.modelFileHashPrefix(), std::string("missing"));
+            return;
+        }
+        // 文件存在时前缀为 8 位十六进制（模型文件更换后前缀随之变化，
+        // 旧向量行在新模型下不再命中，启动回填自动重嵌入）
+        const std::string prefix = provider.modelFileHashPrefix();
+        QCOMPARE(static_cast<int>(prefix.size()), 8);
+        for (const char c : prefix)
+            QVERIFY(std::isxdigit(static_cast<unsigned char>(c)));
+        QVERIFY(id.rfind(prefix) == id.size() - prefix.size());
+    }
+
     void tokenizerProducesHealthyTokens()
     {
         const QString tokenizerPath = embeddingDir() + QStringLiteral("/tokenizer.json");

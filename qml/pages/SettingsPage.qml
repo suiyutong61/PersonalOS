@@ -94,6 +94,33 @@ Item {
 
                 Card {
                     Layout.fillWidth: true
+                    padding: ThemeTokens.spacingMd
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: ThemeTokens.spacingSm
+                        Text {
+                            text: qsTr("提醒")
+                            font.pixelSize: ThemeTokens.fontSizeSection
+                            font.weight: Font.DemiBold
+                            color: ThemeTokens.textPrimary
+                        }
+                        CheckBox {
+                            text: qsTr("启用应用内提醒（程序运行期间）")
+                            checked: vm.remindersEnabled
+                            onToggled: vm.setRemindersEnabled(checked)
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("关闭后不再投递任何提醒；规则与投递记录保留，重新开启后恢复。单项停用/启用请到日历页。")
+                            wrapMode: Text.Wrap
+                            font.pixelSize: ThemeTokens.fontSizeCaption
+                            color: ThemeTokens.textSecondary
+                        }
+                    }
+                }
+
+                Card {
+                    Layout.fillWidth: true
                     padding: ThemeTokens.spacingSm
                     ColumnLayout {
                         id: modelContent

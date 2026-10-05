@@ -19,6 +19,7 @@
 #include "infrastructure/persistence/SqlMelRepository.h"
 #include "infrastructure/persistence/SqlRouteRepository.h"
 #include "infrastructure/persistence/SqlStateRepository.h"
+#include "infrastructure/persistence/SqlUnitOfWork.h"
 
 namespace PersonOS::Presentation {
 
@@ -66,11 +67,12 @@ std::unique_ptr<PlanningPipeline> buildPlanningPipeline(QSqlDatabase database)
         database, *pipeline->clock);
     pipeline->manifestsRepo =
         std::make_unique<Infrastructure::SqlDomainManifestRepository>(database);
+    pipeline->unitOfWork = std::make_unique<Infrastructure::SqlUnitOfWork>(database);
     pipeline->useCases = std::make_unique<Application::AiPlanningUseCases>(
         *pipeline->gateway, *pipeline->aiRepo, *pipeline->retrieval,
         *pipeline->knowledgeRepo, *pipeline->goalsRepo, *pipeline->melsRepo,
         *pipeline->routesRepo, *pipeline->statesRepo, *pipeline->manifestsRepo,
-        *pipeline->aiRepo, *pipeline->uids, *pipeline->clock);
+        *pipeline->aiRepo, *pipeline->uids, *pipeline->clock, *pipeline->unitOfWork);
     return pipeline;
 }
 

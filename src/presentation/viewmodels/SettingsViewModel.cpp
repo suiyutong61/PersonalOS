@@ -117,6 +117,7 @@ void SettingsViewModel::refresh()
 {
     setState(QStringLiteral("loading"));
     setError({});
+    m_remindersEnabled = Presentation::remindersGloballyEnabled();
     const auto database = DatabaseManager::instance().database();
     Infrastructure::QtSystemClock clock;
     Infrastructure::SqlAiRepository aiRepo(database, clock);
@@ -133,6 +134,15 @@ void SettingsViewModel::refresh()
     m_backupsModel.replace(backupRows);
 
     setState(QStringLiteral("ready"));
+    emit dataChanged();
+}
+
+void SettingsViewModel::setRemindersEnabled(bool enabled)
+{
+    m_remindersEnabled = enabled;
+    Presentation::setRemindersGloballyEnabled(enabled);
+    setNotice(enabled ? QStringLiteral("已启用应用内提醒")
+                      : QStringLiteral("已关闭整体提醒：规则与记录保留，投递暂停，重新开启后恢复"));
     emit dataChanged();
 }
 

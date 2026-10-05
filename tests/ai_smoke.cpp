@@ -166,7 +166,7 @@ int main(int argc, char *argv[])
     }
 
     // ---- 4. 错误 key 路径（适配器错误处理）----
-    OpenAiCompatibleAdapter badAdapter(config.baseUrl, QStringLiteral("sk-invalid-key-for-test"),
+    OpenAiCompatibleAdapter badAdapter(config.baseUrl, QStringLiteral("invalid-test-key"),
                                        config.model);
     bool chatOk3 = true;
     QString err3;

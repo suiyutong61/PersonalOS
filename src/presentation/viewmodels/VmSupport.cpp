@@ -65,6 +65,16 @@ QString configuredTesseractPath()
     return QSettings().value(QStringLiteral("literature/tesseract")).toString();
 }
 
+bool remindersGloballyEnabled()
+{
+    return QSettings().value(QStringLiteral("reminders/global_enabled"), true).toBool();
+}
+
+void setRemindersGloballyEnabled(bool enabled)
+{
+    QSettings().setValue(QStringLiteral("reminders/global_enabled"), enabled);
+}
+
 std::optional<Domain::Uid> activeUserUid(QSqlDatabase database)
 {
     QSqlQuery query(database);
@@ -291,6 +301,17 @@ const QHash<QString, QString> &reminderDeliveryStatuses()
     return map;
 }
 
+const QHash<QString, QString> &progressSuggestionTypes()
+{
+    static const QHash<QString, QString> map = {
+        {"method", QStringLiteral("方法绑定")},
+        {"task", QStringLiteral("任务调整")},
+        {"reschedule", QStringLiteral("换序建议")},
+        {"note", QStringLiteral("说明")},
+    };
+    return map;
+}
+
 } // namespace
 
 QString knowledgeTypeLabel(const QString &type)
@@ -382,6 +403,11 @@ QString stageMaterialChoiceLabel(const QString &choice)
 QString reminderDeliveryStatusLabel(const QString &status)
 {
     return labelOrRaw(reminderDeliveryStatuses(), status);
+}
+
+QString progressSuggestionTypeLabel(const QString &type)
+{
+    return labelOrRaw(progressSuggestionTypes(), type);
 }
 
 QString displayDateTime(const QString &isoUtc)

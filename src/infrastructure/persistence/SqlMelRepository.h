@@ -26,7 +26,9 @@ public:
     Application::SaveResult appendProgressEvent(const Domain::Mel &mel,
                                                 const Domain::MelTask &task, double amount,
                                                 const std::string &note,
-                                                const std::string &idempotencyKey) override;
+                                                const std::string &idempotencyKey,
+                                                const std::string &unit = "progress",
+                                                const std::string &actorType = "user") override;
     bool existsIdempotencyKey(const std::string &key) override;
     bool hasTransition(const Domain::Uid &melId, const std::string &trigger) override;
 
@@ -38,6 +40,7 @@ public:
     Application::SaveResult insertPrediction(const Domain::MelPrediction &prediction) override;
     std::optional<Domain::MelPrediction> latestPredictionOf(const Domain::Uid &melId) override;
     std::vector<Domain::Mel> findActive(const Domain::Uid &userId, int limit) override;
+    std::vector<Domain::Mel> findByUser(const Domain::Uid &userId, int limit) override;
 
 private:
     Application::SaveResult writeFailure(const char *operation, const class QSqlQuery &query) const;

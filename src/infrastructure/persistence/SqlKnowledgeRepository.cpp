@@ -468,6 +468,20 @@ std::vector<Domain::EvidenceFragment> SqlKnowledgeRepository::evidenceFragmentsO
     return out;
 }
 
+bool SqlKnowledgeRepository::hasContradictingEvidence(const Domain::Uid &versionUid)
+{
+    const auto pk = resolvePk("SELECT id FROM knowledge_versions_v5 WHERE uid=?",
+                              versionUid.value());
+    if (!pk)
+        return false;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM evidence_links_v5 l "
+        "WHERE l.knowledge_version_id=? AND l.relation='contradicts' LIMIT 1"));
+    query.addBindValue(*pk);
+    return query.exec() && query.next();
+}
+
 Application::SaveResult SqlKnowledgeRepository::deleteItemCascade(const Domain::Uid &uid)
 {
     const auto itemPk =

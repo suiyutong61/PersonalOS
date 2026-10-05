@@ -759,6 +759,8 @@ void GoalRouteViewModel::aiGenerateStageDetail(const QString &userGuidance)
             return;
         }
     }
+    setError({});
+    setState(QStringLiteral("ready"));
     m_stageAiState = QStringLiteral("ai_waiting");
     emit stageAiStateChanged();
 
@@ -785,6 +787,8 @@ void GoalRouteViewModel::aiGenerateStageDetail(const QString &userGuidance)
     }).then([this](QString error) {
         if (error.isEmpty()) {
             refreshStageDetail();
+            setState(QStringLiteral("ready"));
+            setError({});
         } else {
             setState(QStringLiteral("error"));
             setError(error);

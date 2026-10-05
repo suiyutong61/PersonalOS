@@ -59,6 +59,15 @@ const std::vector<ContractSpec> &contracts()
           {"evidence_fragments", true, false, true},
           {"unknowns", true, false, true}}},
         {"generic_v1", {{"user_text", true, false, false}}},
+        {"progress_update_v2",
+         {{"observations", true, false, true},
+          {"task_updates", true, false, true},
+          {"mel_progress", true, true, false},
+          {"learned_contents", true, false, true},
+          {"next_action", true, false, false},
+          {"execution_complete", true, false, false},
+          {"user_text", true, false, false},
+          {"source_mode", true, false, false}}},
     };
     return all;
 }
@@ -112,6 +121,32 @@ std::string ContractValidator::promptSchema(const std::string &contractType,
     }
     if (contractType == "generic_v1") {
         return R"JSON({"user_text": "字符串,面向用户的说明"})JSON";
+    }
+    if (contractType == "progress_update_v2") {
+        return std::string(
+            "写作总要求:根据用户的自然语言汇报判断每个任务的正式进度。"
+            "task_updates 必须覆盖提示词中的全部任务且每个 task_uid 只出现一次;"
+            "progress 为0到1,state必须与进度一致:0=pending,0到1之间=active,1=completed;"
+            "不要让用户自己估算百分比。mel_progress 是全部 required 任务 progress 的平均值;"
+            "execution_complete 仅在全部 required 任务完成时为 true;"
+            "actual_minutes 是能从汇报中可靠判断出的本次实际投入分钟数,无法判断填0;"
+            "next_action 给出下一步唯一且可执行的动作。\n")
+            + R"JSON({
+  "observations": ["观察要点,每句一条"],
+  "task_updates": [{
+    "task_uid": "任务列表中的 uid",
+    "progress": 0.6,
+    "state": "pending|active|completed",
+    "actual_minutes": 30,
+    "rationale": "根据用户哪一句汇报作出的判断"
+  }],
+  "mel_progress": 0.6,
+  "learned_contents": ["本次实际完成的内容"],
+  "next_action": "下一步唯一动作",
+  "execution_complete": false,
+  "user_text": "面向用户的完整说明",
+  "source_mode": "grounded|partially_grounded|ungrounded"
+})JSON";
     }
     if (contractType == "stage_detail_v1") {
         return std::string(

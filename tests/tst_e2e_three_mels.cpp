@@ -165,12 +165,12 @@ private slots:
         QVERIFY(mels.recordProgress(melUid, progress));
 
         // 4) 执行完成 → 结算 → 进入复盘（结算幂等）
-        QVERIFY(mels.completeExecution(melUid, 4));
-        const auto settled = mels.settleMel(melUid, 5);
+        QVERIFY(mels.completeExecution(melUid, 3));
+        const auto settled = mels.settleMel(melUid, 4);
         if (!settled)
             QFAIL(qPrintable(QString::fromStdString(settled.error().message + ": "
                                                     + settled.error().detail)));
-        const auto settledAgain = mels.settleMel(melUid, 7);
+        const auto settledAgain = mels.settleMel(melUid, 6);
         QVERIFY(settledAgain);   // 幂等：重复结算返回同一结果
 
         // 5) 能力验收（三档结果；执行完成 ≠ 掌握）
@@ -207,7 +207,7 @@ private slots:
         score.itemScores.push_back(itemScore);
         QVERIFY(assessments.scoreAttempt(assessment.value().assessment.uid,
                                          current->revision, score));
-        QVERIFY(mels.proceedToReviewing(melUid, 7, "验收已提交"));
+        QVERIFY(mels.proceedToReviewing(melUid, 6, "验收已提交"));
 
         // 6) 复盘：开启 → 问卷（跳过不视为确认）→ 提交 → 关闭 → MEL 关闭
         const auto review = reviews.openReview(melUid);
@@ -226,7 +226,7 @@ private slots:
         reviewInput.nextAction = "生成下一轮 MEL";
         QVERIFY(reviews.submitReview(melUid, 1, reviewInput));
         QVERIFY(reviews.closeReview(melUid, 2));
-        QVERIFY(mels.closeMel(melUid, 8, "生成下一轮 MEL"));
+        QVERIFY(mels.closeMel(melUid, 7, "生成下一轮 MEL"));
 
         // 7) 个人校准（预测 vs 实际）——无预测时诚实不记录
         const auto outcome = calibration.recordMelOutcome(melUid);

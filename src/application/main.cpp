@@ -222,6 +222,9 @@ int main(int argc, char *argv[])
     // 存活至事件循环结束。
     {
         const auto scanReminders = []() {
+            // 整体提醒开关（设置页）：关闭时保持完全静默，规则与投递记录保留
+            if (!Presentation::remindersGloballyEnabled())
+                return;
             const auto database = DatabaseManager::instance().database();
             Infrastructure::QtSystemClock clock;
             Infrastructure::QtUidGenerator uids;

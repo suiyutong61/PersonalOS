@@ -86,19 +86,8 @@ Result<Domain::Mel, ApplicationError> MelUseCases::confirmAndActivate(
         return Result<Domain::Mel, ApplicationError>::failure(
             {ErrorCode::Validation, "capacity basis missing", {}, false});
 
-    const auto result = transition(melUid, Domain::MelState::Active, expectedRevision,
-                                   "confirm_and_activate", "user", {});
-    if (!result)
-        return result;
-    // 记录确认/激活时间（追加历史事实）
-    Domain::Mel updated = result.value();
-    updated.confirmedAt = m_clock.utcIso();
-    updated.activatedAt = m_clock.utcIso();
-    const auto saved = m_repo.update(updated, expectedRevision + 1);
-    if (!saved.ok)
-        return Result<Domain::Mel, ApplicationError>::failure(saved.error);
-    updated.revision = expectedRevision + 2;
-    return Result<Domain::Mel, ApplicationError>::success(std::move(updated));
+    return transition(melUid, Domain::MelState::Active, expectedRevision,
+                      "confirm_and_activate", "user", {});
 }
 
 Result<Domain::Mel, ApplicationError> MelUseCases::pauseMel(const Domain::Uid &melUid,
@@ -254,17 +243,8 @@ Result<Domain::Mel, ApplicationError> MelUseCases::closeMel(const Domain::Uid &m
                                                             int expectedRevision,
                                                             const std::string &nextAction)
 {
-    const auto result = transition(melUid, Domain::MelState::Closed, expectedRevision,
-                                   "close_review", "user", nextAction);
-    if (!result)
-        return result;
-    Domain::Mel updated = result.value();
-    updated.closedAt = m_clock.utcIso();
-    const auto saved = m_repo.update(updated, expectedRevision + 1);
-    if (!saved.ok)
-        return Result<Domain::Mel, ApplicationError>::failure(saved.error);
-    updated.revision = expectedRevision + 2;
-    return Result<Domain::Mel, ApplicationError>::success(std::move(updated));
+    return transition(melUid, Domain::MelState::Closed, expectedRevision,
+                      "close_review", "user", nextAction);
 }
 
 Result<Domain::Mel, ApplicationError> MelUseCases::transition(const Domain::Uid &melUid,
@@ -287,6 +267,16 @@ Result<Domain::Mel, ApplicationError> MelUseCases::transition(const Domain::Uid 
 
     Domain::Mel updated = *current;
     updated.state = to;
+    // 状态与对应的事实时间必须在同一次乐观锁更新中落库，避免“状态已变更、
+    // 时间戳写入失败”的半成功状态。
+    const auto occurredAt = m_clock.utcIso();
+    if (current->state == Domain::MelState::AwaitingConfirmation
+        && to == Domain::MelState::Active) {
+        updated.confirmedAt = occurredAt;
+        updated.activatedAt = occurredAt;
+    }
+    if (to == Domain::MelState::Closed)
+        updated.closedAt = occurredAt;
     const auto saved = m_repo.update(updated, expectedRevision);
     if (!saved.ok)
         return Result<Domain::Mel, ApplicationError>::failure(saved.error);
@@ -302,7 +292,7 @@ Result<Domain::Mel, ApplicationError> MelUseCases::transition(const Domain::Uid 
     t.actorType = actorType;
     t.reason = reason;
     t.idempotencyKey = trigger + ":" + melUid.value() + ":" + std::to_string(expectedRevision);
-    t.occurredAt = m_clock.utcIso();
+    t.occurredAt = occurredAt;
     t.melRevisionAfter = updated.revision;
     m_repo.appendTransition(t);
 

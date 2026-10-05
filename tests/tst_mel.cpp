@@ -148,7 +148,7 @@ private:
         const auto illegal = useCases.confirmAndActivate(melUid, 1);
         QVERIFY(!illegal);
 
-        // 提交确认 → 激活（revision 流转：1→2→3）
+        // 提交确认 → 激活（状态和确认时间同一次更新，revision 流转：1→2→3）
         const auto submitted = useCases.submitForConfirmation(melUid, 1);
         if (!submitted)
             QFAIL(qPrintable(QString::fromStdString(submitted.error().message + ": "
@@ -161,12 +161,12 @@ private:
         QVERIFY(active.value().state == Domain::MelState::Active);
         QVERIFY(active.value().confirmedAt.has_value());
         QVERIFY(active.value().activatedAt.has_value());
-        QCOMPARE(active.value().revision, 4);
+        QCOMPARE(active.value().revision, 3);
 
         // 暂停/恢复
-        const auto paused = useCases.pauseMel(melUid, 4);
+        const auto paused = useCases.pauseMel(melUid, 3);
         QVERIFY(paused && paused.value().state == Domain::MelState::Paused);
-        const auto resumed = useCases.resumeMel(melUid, 5);
+        const auto resumed = useCases.resumeMel(melUid, 4);
         QVERIFY(resumed && resumed.value().state == Domain::MelState::Active);
 
         // 进度上报：任务1 完成、任务2 一半；必做未全完成时不可执行完成
@@ -188,7 +188,7 @@ private:
         p2.idempotencyKey = "progress:2:first";
         QVERIFY(useCases.recordProgress(melUid, p2));
 
-        const auto earlyComplete = useCases.completeExecution(melUid, 6);
+        const auto earlyComplete = useCases.completeExecution(melUid, 5);
         QVERIFY(!earlyComplete); // 必做任务2未完成
 
         // 幂等：重复键拒绝
@@ -202,14 +202,14 @@ private:
         p2b.progress = 1.0;
         p2b.idempotencyKey = "progress:2:second";
         QVERIFY(useCases.recordProgress(melUid, p2b));
-        const auto completed = useCases.completeExecution(melUid, 6);
+        const auto completed = useCases.completeExecution(melUid, 5);
         if (!completed)
             QFAIL(qPrintable(QString::fromStdString(completed.error().message + ": "
                                                     + completed.error().detail)));
         QVERIFY(completed.value().state == Domain::MelState::ExecutionComplete);
 
         // 结算（幂等）：execution_complete → settling → awaiting_assessment
-        const auto settled = useCases.settleMel(melUid, 7);
+        const auto settled = useCases.settleMel(melUid, 6);
         if (!settled)
             QFAIL(qPrintable(QString::fromStdString(settled.error().message + ": "
                                                     + settled.error().detail)));
@@ -217,7 +217,7 @@ private:
         QVERIFY(settled.value().mel.state == Domain::MelState::AwaitingAssessment);
 
         // 重复结算（陈旧 revision）→ 已结算状态幂等返回，不重复转移
-        const auto settledAgain = useCases.settleMel(melUid, 7);
+        const auto settledAgain = useCases.settleMel(melUid, 6);
         if (!settledAgain)
             QFAIL(qPrintable(QString::fromStdString(settledAgain.error().message + ": "
                                                     + settledAgain.error().detail)));
@@ -292,9 +292,9 @@ private slots:
         QVERIFY(found);
 
         // 逾期 → 结算
-        const auto overdue = useCases.markOverdue(melUid, 4);
+        const auto overdue = useCases.markOverdue(melUid, 3);
         QVERIFY(overdue && overdue.value().state == Domain::MelState::Overdue);
-        const auto settled = useCases.settleMel(melUid, 5);
+        const auto settled = useCases.settleMel(melUid, 4);
         QVERIFY(settled && settled.value().mel.state == Domain::MelState::AwaitingAssessment);
     }
 

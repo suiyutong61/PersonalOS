@@ -24,6 +24,7 @@ public:
     Application::SaveResult updateRule(const Domain::ReminderRule &rule,
                                        int expectedRevision) override;
     std::vector<Domain::ReminderRule> enabledRules() override;
+    std::vector<Domain::ReminderRule> allRules() override;
     std::vector<Domain::ReminderRule> rulesForOwner(const std::string &ownerType,
                                                     const std::string &ownerUid) override;
     Application::SaveResult insertDelivery(const Domain::ReminderDelivery &delivery) override;

@@ -59,6 +59,8 @@ public:
     virtual std::vector<Domain::MethodStep> methodStepsOf(const Domain::Uid &versionUid) = 0;
     virtual std::vector<Domain::EvidenceFragment> evidenceFragmentsOf(
         const Domain::Uid &versionUid) = 0;
+    // 该版本是否挂有 contradicts 证据链路（知识冲突确定性检测，DR-028）
+    virtual bool hasContradictingEvidence(const Domain::Uid &versionUid) = 0;
 
     // 级联物理删除(仅限 AI 生成候选;调用方负责资格校验)。
     // 同一事务:类型详情→关系→版本(级联步骤/适用性)→条目(级联分类/标签)。

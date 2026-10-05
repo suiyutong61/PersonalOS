@@ -11,6 +11,7 @@
 
 #include "application/usecases/goal/GoalUseCases.h"
 #include "application/usecases/knowledge/KnowledgeUseCases.h"
+#include "application/usecases/mel/MelUseCases.h"
 #include "application/usecases/planning/AiPlanningUseCases.h"
 #include "application/usecases/route/RouteStageDetailUseCases.h"
 #include "application/usecases/route/RouteUseCases.h"
@@ -30,6 +31,7 @@
 #include "infrastructure/persistence/SqlMelRepository.h"
 #include "infrastructure/persistence/SqlRouteRepository.h"
 #include "infrastructure/persistence/SqlStateRepository.h"
+#include "infrastructure/persistence/SqlUnitOfWork.h"
 
 using namespace PersonOS;
 
@@ -166,9 +168,12 @@ private slots:
             DatabaseManager::instance().database());
         m_knowledgeRepo = std::make_unique<Infrastructure::SqlKnowledgeRepository>(
             DatabaseManager::instance().database(), m_clock);
+        m_unitOfWork = std::make_unique<Infrastructure::SqlUnitOfWork>(
+            DatabaseManager::instance().database());
         return std::make_unique<Application::AiPlanningUseCases>(
             *m_gateway, *aiRepo, *m_retrieval, *m_knowledgeRepo, *m_goalsRepo, *m_melsRepo,
-            *m_routesRepo, *m_statesRepo, *m_manifestsRepo, *aiRepo, m_uids, m_clock);
+            *m_routesRepo, *m_statesRepo, *m_manifestsRepo, *aiRepo, m_uids, m_clock,
+            *m_unitOfWork);
     }
 
     Domain::Uid goalUid()
@@ -216,6 +221,42 @@ private slots:
         if (!q.exec() || !q.next())
             return {};
         return *Domain::Uid::parse(q.value(0).toString().toStdString());
+    }
+
+    // 建一个候选 MEL（任务标题与方法文本 bigram 重叠，保证召回），
+    // 返回 (melUid, taskUid)
+    std::pair<std::string, std::string> createMelWithSpacedRepetitionTask()
+    {
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson = QStringLiteral(
+            "{\"title\":\"本轮复习\",\"tasks\":[{\"title\":\"间隔复习操作系统任务\","
+            "\"planned_effort_min\":60,\"required\":true}],\"rationale\":\"容量依据\","
+            "\"capacity_min\":120,\"reserve_min\":20,\"period_days\":3,"
+            "\"goal_uid\":\"00000000-0000-0000-0000-0000000000ca\","
+            "\"source_mode\":\"partially_grounded\"}")
+                                             .toStdString();
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->generateMelProposal(userUid, goalUid(), std::nullopt);
+        if (!result)
+            return {};
+        // 进度审查只属于已经由用户确认的执行中 MEL。测试辅助方法把 AI
+        // 候选按真实 UI 路径 draft -> awaiting_confirmation -> active。
+        Infrastructure::SqlMelRepository melRepo(DatabaseManager::instance().database(),
+                                                 m_clock);
+        Application::MelUseCases melUseCases(melRepo, m_uids, m_clock);
+        const auto parsedMel = Domain::Uid::parse(result.value().aggregateUid);
+        if (!parsedMel || !melUseCases.submitForConfirmation(*parsedMel, 1)
+            || !melUseCases.confirmAndActivate(*parsedMel, 2))
+            return {};
+        QSqlQuery q(DatabaseManager::instance().database());
+        q.prepare(QStringLiteral(
+            "SELECT uid FROM mel_tasks_v4 WHERE mel_id=(SELECT id FROM mels_v4 WHERE uid=?)"));
+        q.addBindValue(QString::fromStdString(result.value().aggregateUid));
+        if (!q.exec() || !q.next())
+            return {};
+        return {result.value().aggregateUid, q.value(0).toString().toStdString()};
     }
 
     std::string methodItemUidText()
@@ -568,6 +609,185 @@ private slots:
         QCOMPARE(jobCount.value(0).toInt(), 0);
     }
 
+    void progressReviewPipelineAndAdopt()
+    {
+        const auto melAndTask = createMelWithSpacedRepetitionTask();
+        QVERIFY(!melAndTask.first.empty() && !melAndTask.second.empty());
+        const auto melUid = *Domain::Uid::parse(melAndTask.first);
+        Q_UNUSED(melUid)
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson =
+            std::string("{\"observations\":[\"任务完成过半\"],\"task_updates\":[")
+            + "{\"task_uid\":\"" + melAndTask.second
+            + "\",\"progress\":0.5,\"state\":\"active\",\"actual_minutes\":30,"
+              "\"rationale\":\"用户报告进展顺利\"}],\"mel_progress\":0.5,"
+              "\"learned_contents\":[\"间隔复习\"],\"next_action\":\"完成剩余练习\","
+              "\"execution_complete\":false,\"user_text\":\"接下来建议…\","
+              "\"source_mode\":\"partially_grounded\"}";
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->reviewProgress(userUid, melUid,
+                                                     "间隔复习进展顺利");
+        if (!result)
+            QFAIL(qPrintable(QString::fromStdString(result.error().message + ": "
+                                                    + result.error().detail)));
+        QVERIFY2(provider.lastUserPrompt.find("间隔复习进展顺利") != std::string::npos,
+                 "report text must be injected into the prompt");
+        QVERIFY2(provider.lastUserPrompt.find(melAndTask.second) != std::string::npos,
+                 "task uid list must be injected into the prompt");
+
+        Infrastructure::SqlAiRepository ai(DatabaseManager::instance().database(), m_clock);
+        const auto decision = ai.findDecision(
+            *Domain::Uid::parse(result.value().decisionUid));
+        QVERIFY(decision);
+        QVERIFY(decision->userStatus == Domain::DecisionUserStatus::Pending);
+        QCOMPARE(decision->aggregateType, std::string("mel"));
+
+        // 确认后才落地任务进度
+        const auto applied = pipeline->adoptProgressReview(decision->uid);
+        if (!applied)
+            QFAIL(qPrintable(QString::fromStdString(applied.error().message + ": "
+                                                    + applied.error().detail)));
+        QCOMPARE(applied.value(), 1);
+        const auto after = ai.findDecision(decision->uid);
+        QVERIFY(after->userStatus == Domain::DecisionUserStatus::Accepted);
+        const auto duplicateAdopt = pipeline->adoptProgressReview(decision->uid);
+        QVERIFY(!duplicateAdopt);
+        QVERIFY(duplicateAdopt.error().code == Application::ErrorCode::Conflict);
+
+        QSqlQuery taskQ(DatabaseManager::instance().database());
+        taskQ.prepare(QStringLiteral(
+            "SELECT progress FROM mel_tasks_v4 WHERE uid=?"));
+        taskQ.addBindValue(QString::fromStdString(melAndTask.second));
+        QVERIFY(taskQ.exec() && taskQ.next());
+        QCOMPARE(taskQ.value(0).toDouble(), 0.5);
+    }
+
+    void progressReviewRejectsFabricatedMethod()
+    {
+        const auto melAndTask = createMelWithSpacedRepetitionTask();
+        QVERIFY(!melAndTask.first.empty() && !melAndTask.second.empty());
+        const auto melUid = *Domain::Uid::parse(melAndTask.first);
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson =
+            "{\"observations\":[\"x\"],\"task_updates\":[{\"task_uid\":"
+            "\"ffffffff-ffff-ffff-ffff-ffffffffffff\",\"progress\":1,"
+            "\"state\":\"completed\",\"actual_minutes\":0,\"rationale\":\"x\"}],"
+            "\"mel_progress\":1,\"learned_contents\":[],\"next_action\":\"x\","
+            "\"execution_complete\":true,\"user_text\":\"y\",\"source_mode\":\"ungrounded\"}";
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->reviewProgress(userUid, melUid, "间隔复习进展顺利");
+        QVERIFY(!result);
+        QVERIFY(result.error().code == Application::ErrorCode::Validation);
+    }
+
+    void progressReviewRejectsNonExecutableMel()
+    {
+        const auto melAndTask = createMelWithSpacedRepetitionTask();
+        QVERIFY(!melAndTask.first.empty());
+        QSqlQuery state(DatabaseManager::instance().database());
+        state.prepare(QStringLiteral(
+            "UPDATE mels_v4 SET state='execution_complete' WHERE uid=?"));
+        state.addBindValue(QString::fromStdString(melAndTask.first));
+        QVERIFY(state.exec());
+
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson =
+            std::string("{\"observations\":[\"x\"],\"adjustment_suggestions\":[")
+            + "{\"type\":\"note\",\"title\":\"x\",\"detail\":\"x\"}],"
+              "\"user_text\":\"y\",\"source_mode\":\"ungrounded\"}";
+        const auto pipeline = makePipeline(provider);
+        const auto userUid =
+            *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto result = pipeline->reviewProgress(
+            userUid, *Domain::Uid::parse(melAndTask.first), "已经执行完成");
+        QVERIFY(!result);
+        QVERIFY(result.error().code == Application::ErrorCode::Conflict);
+        QVERIFY2(provider.lastUserPrompt.empty(),
+                 "provider must not run for a non-executable mel");
+    }
+
+    void conflictFlagPropagates()
+    {
+        // 给检索召回的方法当前版本挂一条 contradicts 证据链路
+        // （paper analysis 管线真实写入的形态；此处直接 SQL 造数）
+        Infrastructure::SqlKnowledgeRepository knowledgeRepo(
+            DatabaseManager::instance().database(), m_clock);
+        const auto methodItem = knowledgeRepo.findItem(
+            *Domain::Uid::parse(methodItemUidText()));
+        QVERIFY(methodItem && methodItem->currentVersionUid);
+        const std::string versionUid = *methodItem->currentVersionUid;
+
+        QSqlQuery q(DatabaseManager::instance().database());
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO source_records_v5(uid,source_type,title,accessed_at,metadata_json,"
+            "content_hash,trust_tier,created_at,updated_at) VALUES("
+            "'00000000-0000-0000-0000-0000000000cf','manual','冲突证据来源',"
+            "'2026-09-30T00:00:00Z','{}','conflict:src:1','vetted',"
+            "'2026-09-30T00:00:00Z','2026-09-30T00:00:00Z')")));
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO evidence_fragments_v5(uid,source_id,locator_json,text,fragment_hash,"
+            "created_at) VALUES('00000000-0000-0000-0000-0000000000d0',"
+            "(SELECT id FROM source_records_v5 WHERE "
+            "uid='00000000-0000-0000-0000-0000000000cf'),"
+            "'{}','间隔复习对短期记忆可能有反作用','conflict:frag:1',"
+            "'2026-09-30T00:00:00Z')")));
+        QSqlQuery link(DatabaseManager::instance().database());
+        link.prepare(QStringLiteral(
+            "INSERT INTO evidence_links_v5(knowledge_version_id,fragment_id,relation,"
+            "strength,note) VALUES("
+            "(SELECT id FROM knowledge_versions_v5 WHERE uid=?),"
+            "(SELECT id FROM evidence_fragments_v5 WHERE "
+            "uid='00000000-0000-0000-0000-0000000000d0'),"
+            "'contradicts',0.8,'反向证据')"));
+        link.addBindValue(QString::fromStdString(versionUid));
+        QVERIFY(link.exec());
+
+        // 咨询：命中含冲突证据的条目 → 决策 warningJson 置位、提示词带 _conflict
+        FakeProvider provider;
+        provider.canned.ok = true;
+        provider.canned.structuredJson =
+            std::string("{\"user_text\":\"这是回答\",\"source_mode\":\"ungrounded\"}");
+        const auto pipeline = makePipeline(provider);
+        const auto userUid = *Domain::Uid::parse("00000000-0000-0000-0000-0000000000aa");
+        const auto advisor = pipeline->askAdvisor(userUid, "怎么复习操作系统？");
+        if (!advisor)
+            QFAIL(qPrintable(QString::fromStdString(advisor.error().message + ": "
+                                                    + advisor.error().detail)));
+        QVERIFY2(provider.lastUserPrompt.find("\"_conflict\":true") != std::string::npos,
+                 "prompt must carry the conflict flag");
+        Infrastructure::SqlAiRepository ai(DatabaseManager::instance().database(), m_clock);
+        const auto decision = ai.findDecision(
+            *Domain::Uid::parse(advisor.value().decisionUid));
+        QVERIFY(decision);
+        QCOMPARE(decision->warningJson, std::string("{\"conflict\":true}"));
+
+        // 路线候选同样传播
+        FakeProvider routeProvider;
+        routeProvider.canned.ok = true;
+        routeProvider.canned.structuredJson = QStringLiteral(
+            "{\"goal_uid\":\"00000000-0000-0000-0000-0000000000ca\","
+            "\"stages\":[{\"title\":\"A\"},{\"title\":\"B\"},{\"title\":\"C\"}],"
+            "\"rationale\":\"依据测试\",\"evidence_summary\":\"无\",\"assumptions\":{},"
+            "\"source_mode\":\"ungrounded\"}")
+                                                   .toStdString();
+        const auto routePipeline = makePipeline(routeProvider);
+        const auto route = routePipeline->generateRouteProposal(userUid, goalUid());
+        if (!route)
+            QFAIL(qPrintable(QString::fromStdString(route.error().message + ": "
+                                                    + route.error().detail)));
+        const auto routeDecision = ai.findDecision(
+            *Domain::Uid::parse(route.value().decisionUid));
+        QVERIFY(routeDecision);
+        QCOMPARE(routeDecision->warningJson, std::string("{\"conflict\":true}"));
+    }
+
     void stageDetailPipeline()
     {
         const auto stageUid = createConfirmedStage(QStringLiteral("间隔复习操作系统基础"));
@@ -763,6 +983,7 @@ private:
     std::unique_ptr<Infrastructure::SqlStateRepository> m_statesRepo;
     std::unique_ptr<Infrastructure::SqlDomainManifestRepository> m_manifestsRepo;
     std::unique_ptr<Infrastructure::SqlKnowledgeRepository> m_knowledgeRepo;
+    std::unique_ptr<Infrastructure::SqlUnitOfWork> m_unitOfWork;
 };
 
 QTEST_GUILESS_MAIN(TstAiPlanning)

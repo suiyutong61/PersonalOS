@@ -54,6 +54,115 @@ Item {
                 || vm.pageState === "error" || vm.pageState === "offline"
             spacing: ThemeTokens.spacingSm
 
+            // 汇报进度：MEL 页主循环——文字汇报给 AI，AI 出调整候选
+            Card {
+                Layout.fillWidth: true
+                visible: vm.melState === "active" || vm.melState === "paused"
+                padding: ThemeTokens.spacingMd
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: ThemeTokens.spacingSm
+                    Text {
+                        text: qsTr("汇报进度")
+                        font.pixelSize: ThemeTokens.fontSizeSection
+                        font.weight: Font.DemiBold
+                        color: ThemeTokens.textPrimary
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("直接说这次做了什么、结果怎样、花了多久。AI 会判断各任务进度和下一步；先给你看变更，确认后才写入。")
+                        wrapMode: Text.Wrap
+                        font.pixelSize: ThemeTokens.fontSizeCaption
+                        color: ThemeTokens.textSecondary
+                    }
+                    TextArea {
+                        id: reportText
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 80
+                        placeholderText: qsTr("例如：今天照着文档部署好了 Nginx，能通过域名访问；排查 502 花了约 40 分钟。")
+                        wrapMode: TextArea.Wrap
+                        enabled: vm.aiState !== "ai_waiting"
+                    }
+                    RowLayout {
+                        spacing: ThemeTokens.spacingSm
+                        Item { Layout.fillWidth: true }
+                        AppButton {
+                            text: vm.aiState === "ai_waiting" ? qsTr("AI 分析中…")
+                                                              : qsTr("汇报给 AI")
+                            variant: "primary"
+                            enabled: vm.aiState !== "ai_waiting"
+                            onClicked: {
+                                vm.reportProgress(reportText.text)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // AI 调整建议（进度审查候选：一键采用）
+            Card {
+                Layout.fillWidth: true
+                visible: vm.reviewVisible
+                padding: ThemeTokens.spacingMd
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: ThemeTokens.spacingSm
+                    Text {
+                        text: qsTr("AI 准备这样更新")
+                        font.pixelSize: ThemeTokens.fontSizeSection
+                        font.weight: Font.DemiBold
+                        color: ThemeTokens.textPrimary
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: vm.reviewNotice !== ""
+                        text: vm.reviewNotice
+                        wrapMode: Text.Wrap
+                        color: ThemeTokens.textPrimary
+                    }
+                    Repeater {
+                        model: vm.reviewModel
+                        ColumnLayout {
+                            required property string title
+                            required property string subtitle
+                            required property string badge
+                            Layout.fillWidth: true
+                            spacing: ThemeTokens.spacingXs
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: title
+                                    font.weight: Font.DemiBold
+                                    color: ThemeTokens.textPrimary
+                                }
+                                StatusBadge { text: badge; tone: "info" }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: subtitle !== ""
+                                text: subtitle
+                                wrapMode: Text.Wrap
+                                font.pixelSize: ThemeTokens.fontSizeCaption
+                                color: ThemeTokens.textSecondary
+                            }
+                        }
+                    }
+                    RowLayout {
+                        spacing: ThemeTokens.spacingSm
+                        AppButton {
+                            text: qsTr("确认更新")
+                            variant: "primary"
+                            onClicked: vm.adoptReview()
+                        }
+                        AppButton {
+                            text: qsTr("放弃")
+                            onClicked: vm.abandonReview()
+                        }
+                    }
+                }
+            }
+
             Card {
                 Layout.fillWidth: true
                 padding: ThemeTokens.spacingMd
@@ -71,7 +180,10 @@ Item {
                         }
                         StatusBadge {
                             text: vm.melStateLabel
-                            tone: vm.melState === "active" ? "success" : "neutral"
+                            tone: vm.melState === "active" ? "success"
+                                  : (vm.melState === "draft"
+                                     || vm.melState === "awaiting_confirmation")
+                                    ? "warning" : "neutral"
                         }
                     }
                     Text {
@@ -132,10 +244,6 @@ Item {
                             text: badge
                             tone: badge === "100%" ? "success" : "info"
                         }
-                        AppButton {
-                            text: qsTr("更新进度")
-                            onClicked: progressDialog.openFor(uid, title)
-                        }
                     }
                 }
             }
@@ -144,17 +252,25 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: ThemeTokens.spacingSm
+                // 候选态：确认并激活是唯一正式动作（执行命令仅活跃后可用）
                 AppButton {
-                    text: qsTr("标记执行完成")
+                    visible: vm.melState === "draft"
+                             || vm.melState === "awaiting_confirmation"
+                    text: qsTr("确认并激活")
                     variant: "primary"
-                    onClicked: vm.completeExecution()
+                    onClicked: vm.confirmMel()
                 }
                 AppButton {
+                    visible: vm.melState === "execution_complete"
+                             || vm.melState === "overdue"
                     text: qsTr("结算")
+                    enabled: vm.aiState !== "ai_waiting"
                     onClicked: vm.settle()
                 }
                 AppButton {
+                    visible: vm.melState === "active" || vm.melState === "paused"
                     text: vm.melState === "paused" ? qsTr("恢复") : qsTr("暂停")
+                    enabled: vm.aiState !== "ai_waiting"
                     onClicked: vm.pauseResume()
                 }
                 AppButton {
@@ -165,6 +281,7 @@ Item {
                     onClicked: vm.aiGenerateMel()
                 }
                 AppButton {
+                    visible: vm.melState === "active" || vm.melState === "paused"
                     text: qsTr("AI 方法建议")
                     enabled: vm.aiState !== "ai_waiting"
                     onClicked: vm.aiSuggestMethods()
@@ -177,42 +294,11 @@ Item {
         }
     }
 
-    Dialog {
-        id: progressDialog
-        anchors.centerIn: parent
-        title: qsTr("更新任务进度")
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        property string taskUid: ""
-        property string taskTitle: ""
-
-        function openFor(uid, title) {
-            taskUid = uid
-            taskTitle = title
-            progressValue.value = 0
-            progressNote.text = ""
-            open()
+    Connections {
+        target: vm
+        function onProgressReviewGenerated() {
+            reportText.text = ""
         }
-
-        ColumnLayout {
-            spacing: ThemeTokens.spacingSm
-            Text {
-                text: progressDialog.taskTitle
-                font.pixelSize: ThemeTokens.fontSizeBody
-                color: ThemeTokens.textPrimary
-            }
-            SpinBox {
-                id: progressValue
-                from: 0
-                to: 100
-                stepSize: 5
-                value: 0
-            }
-            TextField {
-                id: progressNote
-                placeholderText: qsTr("本次学到的内容/章节（可选）")
-            }
-        }
-        onAccepted: vm.recordProgress(taskUid, progressValue.value, progressNote.text)
     }
 
     Component.onCompleted: vm.refresh()

@@ -37,6 +37,10 @@ public:
     Result<Domain::ReminderRule, ApplicationError> disableRule(const Domain::Uid &ruleUid,
                                                                int expectedRevision);
 
+    // 重新启用提醒（规则管理 UI 开关）
+    Result<Domain::ReminderRule, ApplicationError> enableRule(const Domain::Uid &ruleUid,
+                                                              int expectedRevision);
+
     // 为无任何提醒规则的活跃 MEL 自动建立默认 Deadline 规则（app 渠道、
     // 提前 0 分钟）。停用规则视为"用户已决定"，不自动重建。返回新建数。
     Result<int, ApplicationError> ensureMelDeadlineReminders(const Domain::Uid &userId,

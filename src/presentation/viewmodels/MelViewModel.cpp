@@ -1,8 +1,13 @@
 #include "presentation/viewmodels/MelViewModel.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QVariantMap>
 
 #include <QtConcurrent/QtConcurrent>
+
+#include <algorithm>
 
 #include "application/usecases/mel/MelUseCases.h"
 #include "application/usecases/planning/AiPlanningUseCases.h"
@@ -63,13 +68,28 @@ void MelViewModel::refresh()
     if (!userUid) {
         m_tasksModel.clear();
         m_melUid.clear();
+        refreshReview();
         setState(QStringLiteral("empty"));
         return;
     }
 
     Infrastructure::QtSystemClock clock;
     Infrastructure::SqlMelRepository melRepo(database, clock);
-    const auto activeMels = melRepo.findActive(*userUid, 1);
+    auto activeMels = melRepo.findActive(*userUid, 1);
+    // 无活跃 MEL 时回退展示最新"候选/待确认"MEL（首个 MEL 流程：
+    // AI 生成的是候选，必须让用户看到并确认，否则首个 MEL 是死路；
+    // 已关闭/取消的历史 MEL 不展示）
+    if (activeMels.empty()) {
+        // 执行完成后仍必须展示同一个 MEL，用户才能继续结算/验收/复盘。
+        // 旧实现只回退 draft/awaiting_confirmation，导致 completeExecution()
+        // 成功后页面立刻 empty，结算入口永久不可达。
+        for (const auto &candidate : melRepo.findByUser(*userUid, 20)) {
+            if (!Domain::MelStateMachine::isTerminal(candidate.state)) {
+                activeMels.push_back(candidate);
+                break;
+            }
+        }
+    }
     if (activeMels.empty()) {
         m_tasksModel.clear();
         m_melUid.clear();
@@ -78,6 +98,7 @@ void MelViewModel::refresh()
         m_melStateLabel.clear();
         m_melDeadline.clear();
         m_melProgress.clear();
+        refreshReview();
         setState(QStringLiteral("empty"));
         emit melChanged();
         return;
@@ -109,38 +130,9 @@ void MelViewModel::refresh()
                         ? Presentation::percentText(progressSum / requiredCount)
                         : Presentation::percentText(0.0);
     setState(QStringLiteral("ready"));
+    refreshReview();
     emit melChanged();
     emit dataChanged();
-}
-
-void MelViewModel::recordProgress(const QString &taskUid, int percent, const QString &note)
-{
-    const auto parsedTask = Domain::Uid::parse(taskUid.toStdString());
-    const auto parsedMel = Domain::Uid::parse(m_melUid.toStdString());
-    if (!parsedTask || !parsedMel || percent < 0 || percent > 100) {
-        setState(QStringLiteral("conflict"));
-        setError(QStringLiteral("进度必须在 0–100 之间"));
-        return;
-    }
-
-    const auto database = DatabaseManager::instance().database();
-    Infrastructure::QtSystemClock clock;
-    Infrastructure::QtUidGenerator uids;
-    Infrastructure::SqlMelRepository melRepo(database, clock);
-    Application::MelUseCases useCases(melRepo, uids, clock);
-
-    Application::MelUseCases::ProgressInput input;
-    input.taskUid = *parsedTask;
-    input.progress = percent / 100.0;
-    input.note = note.trimmed().toStdString();
-    input.idempotencyKey = "ui:" + uids.next().value();
-    const auto updated = useCases.recordProgress(*parsedMel, input);
-    if (!updated) {
-        setState(QStringLiteral("error"));
-        setError(Presentation::friendlyError(updated.error().message, updated.error().detail));
-        return;
-    }
-    refresh();
 }
 
 void MelViewModel::completeExecution()
@@ -307,6 +299,198 @@ void MelViewModel::runAi(const QString &purpose, const QString &jobType)
 void MelViewModel::aiGenerateMel()
 {
     runAi(QStringLiteral("ai_mel"), QStringLiteral("mel"));
+}
+
+void MelViewModel::reportProgress(const QString &text)
+{
+    const auto melUid = Domain::Uid::parse(m_melUid.toStdString());
+    const auto userUid = Presentation::activeUserUid(DatabaseManager::instance().database());
+    if (!melUid || !userUid) {
+        setState(QStringLiteral("conflict"));
+        setError(QStringLiteral("请先生成或确认一个 MEL"));
+        return;
+    }
+    if (text.trimmed().isEmpty()) {
+        setState(QStringLiteral("conflict"));
+        setError(QStringLiteral("请直接告诉 AI 这次做了什么、结果怎样"));
+        return;
+    }
+    // 诚实降级预检：未配置可用模型直接给出可行动指引
+    {
+        Infrastructure::QtSystemClock clock;
+        Infrastructure::SqlAiRepository aiRepo(DatabaseManager::instance().database(), clock);
+        if (!aiRepo.findFirstEnabledConfig()) {
+            setState(QStringLiteral("offline"));
+            setError(QStringLiteral("未配置可用的模型连接：请到设置页添加、测试并启用连接"));
+            return;
+        }
+    }
+    m_aiState = QStringLiteral("ai_waiting");
+    emit aiStateChanged();
+
+    const QString dbPath = DatabaseManager::instance().databasePath();
+    QtConcurrent::run([melUid = *melUid, userUid = *userUid,
+                       report = text.trimmed().toStdString(), dbPath]() {
+        QString error;
+        Infrastructure::DatabaseConnectionFactory factory(dbPath);
+        QString openError;
+        QSqlDatabase workerDb = factory.openForCurrentThread(
+            QStringLiteral("ai_progress_review"), &openError);
+        if (!workerDb.isOpen())
+            return QStringLiteral("数据库连接失败：") + openError;
+        const auto pipeline = Presentation::buildPlanningPipeline(workerDb);
+        const auto result =
+            pipeline->useCases->reviewProgress(userUid, melUid, report);
+        if (!result)
+            error = Presentation::friendlyError(result.error().message,
+                                                result.error().detail);
+        Infrastructure::DatabaseConnectionFactory::closeCurrentThreadConnection(
+            QStringLiteral("ai_progress_review"));
+        return error;
+    }).then(this, [this](QString error) {
+        if (error.isEmpty()) {
+            refresh();
+            emit progressReviewGenerated();
+        } else {
+            setState(QStringLiteral("error"));
+            setError(error);
+        }
+        m_aiState = QStringLiteral("idle");
+        emit aiStateChanged();
+    });
+}
+
+void MelViewModel::adoptReview()
+{
+    const auto reviewUid = Domain::Uid::parse(m_reviewUid.toStdString());
+    if (!reviewUid) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("没有可采用的调整建议"));
+        return;
+    }
+    const auto database = DatabaseManager::instance().database();
+    const auto pipeline = Presentation::buildPlanningPipeline(database);
+    const auto applied = pipeline->useCases->adoptProgressReview(*reviewUid);
+    if (!applied) {
+        setState(QStringLiteral("error"));
+        setError(Presentation::friendlyError(applied.error().message,
+                                             applied.error().detail));
+        return;
+    }
+    refresh();
+}
+
+void MelViewModel::abandonReview()
+{
+    const auto reviewUid = Domain::Uid::parse(m_reviewUid.toStdString());
+    if (!reviewUid)
+        return;
+    const auto pipeline = Presentation::buildPlanningPipeline(
+        DatabaseManager::instance().database());
+    const auto result = pipeline->useCases->markDecision(
+        reviewUid->value(), "rejected", std::nullopt);
+    if (!result) {
+        setState(QStringLiteral("error"));
+        setError(Presentation::friendlyError(result.error().message, result.error().detail));
+        return;
+    }
+    refresh();
+}
+
+void MelViewModel::refreshReview()
+{
+    m_reviewModel.clear();
+    m_reviewNotice.clear();
+    m_reviewUid.clear();
+    m_reviewVisible = false;
+
+    const auto database = DatabaseManager::instance().database();
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::SqlAiRepository aiRepo(database, clock);
+    if (m_melUid.isEmpty()) {
+        emit reviewChanged();
+        return;
+    }
+    // 当前 MEL 的最新一条未采用进度审查（listDecisions 最新在前）。
+    // 不按 aggregate 过滤会把另一个 MEL 的建议显示在当前页面，甚至误采用。
+    for (const auto &decision : aiRepo.listDecisions("progress_review", 50)) {
+        if (decision.userStatus != Domain::DecisionUserStatus::Pending)
+            continue;
+        if (decision.aggregateType != "mel" || decision.aggregateUid != m_melUid.toStdString())
+            continue;
+        m_reviewUid = QString::fromStdString(decision.uid.value());
+        const QJsonDocument doc = QJsonDocument::fromJson(
+            QByteArray::fromStdString(decision.candidateJson));
+        m_reviewNotice =
+            doc.object().value(QStringLiteral("user_text")).toString();
+        QVariantList rows;
+        Infrastructure::SqlMelRepository melRepo(database, clock);
+        const auto parsedMel = Domain::Uid::parse(m_melUid.toStdString());
+        const auto tasks = parsedMel ? melRepo.tasksOf(*parsedMel) : std::vector<Domain::MelTask>{};
+        for (const auto &value : doc.object().value(QStringLiteral("task_updates")).toArray()) {
+            const QJsonObject suggestion = value.toObject();
+            const QString taskUid = suggestion.value(QStringLiteral("task_uid")).toString();
+            const auto found = std::find_if(tasks.begin(), tasks.end(), [&](const auto &task) {
+                return task.uid.value() == taskUid.toStdString();
+            });
+            if (found == tasks.end())
+                continue;
+            QVariantMap map;
+            map.insert(QStringLiteral("uid"), QString::number(rows.size()));
+            map.insert(QStringLiteral("kind"), QStringLiteral("progress"));
+            map.insert(QStringLiteral("title"), QString::fromStdString(found->title));
+            const int before = qRound(found->progress * 100.0);
+            const int after = qRound(suggestion.value(QStringLiteral("progress")).toDouble() * 100.0);
+            map.insert(QStringLiteral("subtitle"),
+                       QStringLiteral("当前 %1% → 确认后 %2% · %3")
+                           .arg(before).arg(after)
+                           .arg(suggestion.value(QStringLiteral("rationale")).toString()));
+            map.insert(QStringLiteral("badge"), QStringLiteral("%1% → %2%").arg(before).arg(after));
+            map.insert(QStringLiteral("badgeTone"), QStringLiteral("info"));
+            rows.append(map);
+        }
+        m_reviewModel.replace(rows);
+        m_reviewVisible = true;
+        break;
+    }
+    emit reviewChanged();
+}
+
+void MelViewModel::confirmMel()
+{
+    const auto melUid = Domain::Uid::parse(m_melUid.toStdString());
+    const auto database = DatabaseManager::instance().database();
+    if (!melUid) {
+        setState(QStringLiteral("error"));
+        setError(QStringLiteral("无效的 MEL 标识"));
+        return;
+    }
+    Infrastructure::QtSystemClock clock;
+    Infrastructure::QtUidGenerator uids;
+    Infrastructure::SqlMelRepository melRepo(database, clock);
+    Application::MelUseCases useCases(melRepo, uids, clock);
+    int activationRevision = m_melRevision;
+    // AI 候选历史上以 draft 落库；确认动作必须完整执行
+    // draft -> awaiting_confirmation -> active，不能直接跳状态机。
+    // 同时兼容已经是 awaiting_confirmation 的候选。
+    if (m_melState == QStringLiteral("draft")) {
+        const auto submitted = useCases.submitForConfirmation(*melUid, activationRevision);
+        if (!submitted) {
+            setState(QStringLiteral("error"));
+            setError(Presentation::friendlyError(submitted.error().message,
+                                                 submitted.error().detail));
+            return;
+        }
+        activationRevision = submitted.value().revision;
+    }
+    const auto activated = useCases.confirmAndActivate(*melUid, activationRevision);
+    if (!activated) {
+        setState(QStringLiteral("error"));
+        setError(Presentation::friendlyError(activated.error().message,
+                                             activated.error().detail));
+        return;
+    }
+    refresh();
 }
 
 void MelViewModel::aiSuggestMethods()

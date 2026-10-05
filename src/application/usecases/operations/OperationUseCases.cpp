@@ -28,6 +28,18 @@ std::optional<std::string> isoMinusMinutes(const std::string &isoUtc, int minute
     return parsed.addSecs(-minutes * 60).toString(Qt::ISODate).toStdString();
 }
 
+// ISO-8601 不能直接按字符串比较：同一时刻可以写成 Z、+08:00 或带毫秒。
+// 统一解析为绝对时间后再判断，避免非 UTC 偏移格式的提醒永远不触发。
+bool isoAtOrBefore(const std::string &value, const std::string &reference)
+{
+    const QDateTime parsedValue = QDateTime::fromString(
+        QString::fromStdString(value), Qt::ISODate);
+    const QDateTime parsedReference = QDateTime::fromString(
+        QString::fromStdString(reference), Qt::ISODate);
+    return parsedValue.isValid() && parsedReference.isValid()
+           && parsedValue.toUTC() <= parsedReference.toUTC();
+}
+
 // 静默时段判定（{"start":"HH:mm","end":"HH:mm"}，本地时区；start>end 表示跨午夜）
 bool inQuietHours(const std::string &quietHoursJson, const QTime &localNow)
 {
@@ -102,6 +114,22 @@ Result<Domain::ReminderRule, ApplicationError> ReminderService::disableRule(
     return Result<Domain::ReminderRule, ApplicationError>::success(std::move(updated));
 }
 
+Result<Domain::ReminderRule, ApplicationError> ReminderService::enableRule(
+    const Domain::Uid &ruleUid, int expectedRevision)
+{
+    const auto current = m_repo.findRule(ruleUid);
+    if (!current)
+        return Result<Domain::ReminderRule, ApplicationError>::failure(
+            {ErrorCode::NotFound, "reminder rule not found", {}, false});
+    Domain::ReminderRule updated = *current;
+    updated.enabled = true;
+    const auto saved = m_repo.updateRule(updated, expectedRevision);
+    if (!saved.ok)
+        return Result<Domain::ReminderRule, ApplicationError>::failure(saved.error);
+    updated.revision = expectedRevision + 1;
+    return Result<Domain::ReminderRule, ApplicationError>::success(std::move(updated));
+}
+
 Result<int, ApplicationError> ReminderService::ensureMelDeadlineReminders(
     const Domain::Uid &userId, int limit)
 {
@@ -140,7 +168,7 @@ Result<int, ApplicationError> ReminderService::scheduleDue(const std::string &tr
         const auto dueAt = isoMinusMinutes(mel->plannedEndAt, rule.offsetMin);
         if (!dueAt)
             continue;
-        if (*dueAt > triggerAtIso)
+        if (!isoAtOrBefore(*dueAt, triggerAtIso))
             continue;   // 未到期
         // 幂等键 = rule uid + 到期时刻：同一次到期只产生一批投递，
         // 重启补发与新到期自然区分（DB-06）
@@ -166,9 +194,28 @@ Result<int, ApplicationError> ReminderService::dispatchPending()
     const std::string nowIso = m_clock.utcIso();
     for (const auto &pending : m_repo.pendingDeliveries(nowIso)) {
         const auto rule = m_repo.findRule(pending.ruleUid);
+        // 已排队的失败重试也必须重新尊重用户当前决定。否则用户停用规则，
+        // 或 MEL 已执行完成后，旧 pending/failed 行仍会继续弹出提醒。
+        if (!rule || !rule->enabled) {
+            const auto suppressed = m_repo.markDelivery(
+                pending.uid, "suppressed", std::string("rule disabled or missing"));
+            if (!suppressed.ok)
+                return Result<int, ApplicationError>::failure(suppressed.error);
+            continue;
+        }
+        if (rule->ownerType == "mel") {
+            const auto melUid = Domain::Uid::parse(rule->ownerUid);
+            const auto mel = melUid ? m_mels.findByUid(*melUid) : std::nullopt;
+            if (!mel || !melOpenForReminder(*mel)) {
+                const auto suppressed = m_repo.markDelivery(
+                    pending.uid, "suppressed", std::string("mel no longer open"));
+                if (!suppressed.ok)
+                    return Result<int, ApplicationError>::failure(suppressed.error);
+                continue;
+            }
+        }
         // 静默时段：如实记 suppressed（不打扰用户，也不伪装成功）
-        if (rule && inQuietHours(rule->quietHoursJson,
-                                 QDateTime::currentDateTime().time())) {
+        if (inQuietHours(rule->quietHoursJson, QDateTime::currentDateTime().time())) {
             const auto suppressed = m_repo.markDelivery(
                 pending.uid, "suppressed", std::string("quiet hours"));
             if (!suppressed.ok)
@@ -179,7 +226,7 @@ Result<int, ApplicationError> ReminderService::dispatchPending()
         // 通知内容：绑定 MEL 时给出具体事项（不绑定则保持通用文案）
         std::string title = "Personal OS 提醒";
         std::string body = "您有到期的提醒事项";
-        if (rule && rule->ownerType == "mel") {
+        if (rule->ownerType == "mel") {
             if (const auto melUid = Domain::Uid::parse(rule->ownerUid))
                 if (const auto mel = m_mels.findByUid(*melUid)) {
                     title = "Personal OS 提醒";

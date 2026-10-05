@@ -33,6 +33,14 @@ Item {
             contentCount: vm.historyModel.count
         }
 
+        // 知识冲突警示（DR-028：与建议同时显示，不混同知识不足）
+        InfoBanner {
+            Layout.fillWidth: true
+            visible: vm.latestConflict
+            tone: "warning"
+            text: qsTr("最近一次回答引用的知识存在重要冲突：结论已降低强度，请打开详情查看。")
+        }
+
         Card {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -53,6 +61,48 @@ Item {
                     clip: true
                     spacing: ThemeTokens.spacingXs
                     model: vm.historyModel
+                    footer: Item {
+                        width: historyList.width
+                        height: vm.pendingQuestion === "" ? 0 : pendingColumn.implicitHeight + ThemeTokens.spacingSm
+                        visible: vm.pendingQuestion !== ""
+                        ColumnLayout {
+                            id: pendingColumn
+                            width: parent.width
+                            spacing: ThemeTokens.spacingXs
+                            Rectangle {
+                                Layout.alignment: Qt.AlignRight
+                                Layout.maximumWidth: historyList.width * 0.82
+                                implicitWidth: pendingText.implicitWidth + ThemeTokens.spacingMd * 2
+                                implicitHeight: pendingText.implicitHeight + ThemeTokens.spacingSm * 2
+                                radius: ThemeTokens.radiusMd
+                                color: ThemeTokens.colorAccent
+                                Text {
+                                    id: pendingText
+                                    anchors.fill: parent
+                                    anchors.margins: ThemeTokens.spacingSm
+                                    text: vm.pendingQuestion
+                                    wrapMode: Text.WordWrap
+                                    color: ThemeTokens.onAccent
+                                    font.pixelSize: ThemeTokens.fontSizeBody
+                                }
+                            }
+                            Rectangle {
+                                Layout.alignment: Qt.AlignLeft
+                                implicitWidth: waitingText.implicitWidth + ThemeTokens.spacingMd * 2
+                                implicitHeight: waitingText.implicitHeight + ThemeTokens.spacingSm * 2
+                                radius: ThemeTokens.radiusMd
+                                color: ThemeTokens.bgLayer
+                                border.color: ThemeTokens.borderColor
+                                Text {
+                                    id: waitingText
+                                    anchors.centerIn: parent
+                                    text: qsTr("AI 正在思考…")
+                                    color: ThemeTokens.textSecondary
+                                    font.pixelSize: ThemeTokens.fontSizeBody
+                                }
+                            }
+                        }
+                    }
                     delegate: Card {
                         required property string uid
                         required property string title
@@ -118,11 +168,22 @@ Item {
                         placeholderText: qsTr("输入你的问题…")
                     }
                     AppButton {
-                        text: qsTr("发送")
+                        text: vm.pageState === "ai_waiting" ? qsTr("AI 回答中…") : qsTr("发送")
                         variant: "primary"
-                        onClicked: {
-                            vm.send(questionInput.text)
+                        enabled: vm.pageState !== "ai_waiting"
+                                 && questionInput.text.trim() !== ""
+                        onClicked: vm.send(questionInput.text)
+                    }
+                    Connections {
+                        target: vm
+                        function onAnswerGenerated() {
                             questionInput.text = ""
+                        }
+                        function onDataChanged() {
+                            Qt.callLater(function() { historyList.positionViewAtEnd() })
+                        }
+                        function onPendingQuestionChanged() {
+                            Qt.callLater(function() { historyList.positionViewAtEnd() })
                         }
                     }
                     AppButton {
@@ -154,6 +215,12 @@ Item {
         ColumnLayout {
             anchors.fill: parent
             spacing: ThemeTokens.spacingSm
+            InfoBanner {
+                Layout.fillWidth: true
+                visible: vm.detailConflict
+                tone: "warning"
+                text: qsTr("该回答引用的知识存在重要冲突：结论已降低强度，依据可在知识库核实。")
+            }
             Text {
                 Layout.fillWidth: true
                 text: qsTr("问题")

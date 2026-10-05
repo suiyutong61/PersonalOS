@@ -297,7 +297,8 @@ Application::SaveResult SqlMelRepository::updateTask(const Domain::MelTask &task
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "UPDATE mel_tasks_v4 SET state=?, progress=?, completed_at=?, title=?, "
-        "description=?, updated_at=?, revision=revision+1 WHERE uid=? AND revision=?"));
+        "description=?, planned_effort_min=?, updated_at=?, revision=revision+1 "
+        "WHERE uid=? AND revision=?"));
     query.addBindValue(QString::fromStdString(Domain::toString(task.state)));
     query.addBindValue(task.progress);
     query.addBindValue(task.completedAt
@@ -305,6 +306,7 @@ Application::SaveResult SqlMelRepository::updateTask(const Domain::MelTask &task
                            : QVariant());
     query.addBindValue(QString::fromStdString(task.title));
     query.addBindValue(QString::fromStdString(task.description));
+    query.addBindValue(task.plannedEffortMin);
     query.addBindValue(QString::fromStdString(now));
     query.addBindValue(QString::fromStdString(task.uid.value()));
     query.addBindValue(expectedRevision);
@@ -390,7 +392,8 @@ Application::SaveResult SqlMelRepository::appendTransition(
 
 Application::SaveResult SqlMelRepository::appendProgressEvent(
     const Domain::Mel &mel, const Domain::MelTask &task, double amount,
-    const std::string &note, const std::string &idempotencyKey)
+    const std::string &note, const std::string &idempotencyKey,
+    const std::string &unit, const std::string &actorType)
 {
     bool userFound = false;
     const qint64 userPk = resolveUserId(mel.userId, &userFound);
@@ -425,14 +428,15 @@ Application::SaveResult SqlMelRepository::appendProgressEvent(
     query.addBindValue(*goalPk);
     query.addBindValue(taskPk);
     query.addBindValue(QString::fromLatin1(
-        amount >= 1.0 ? "completed" : (amount > 0.0 ? "incremented" : "started")));
+        unit == "progress" && amount >= 1.0 ? "completed"
+        : (amount > 0.0 ? "incremented" : "started")));
     query.addBindValue(amount);
-    query.addBindValue(QStringLiteral("progress"));
+    query.addBindValue(QString::fromStdString(unit));
     query.addBindValue(note.empty() ? QVariant() : QVariant(QString::fromStdString(note)));
     query.addBindValue(QVariant()); // evidence_asset_uid
     query.addBindValue(QString::fromStdString(now));
     query.addBindValue(QString::fromStdString(now));
-    query.addBindValue(QStringLiteral("user"));
+    query.addBindValue(QString::fromStdString(actorType));
     query.addBindValue(QString::fromStdString(idempotencyKey));
     query.addBindValue(QVariant()); // supersedes_uid
     if (!query.exec())
@@ -473,6 +477,24 @@ std::vector<Domain::Mel> SqlMelRepository::findActive(const Domain::Uid &userId,
         "SELECT %1%2 WHERE m.state IN ('active','paused') "
         "AND m.user_id=(SELECT id FROM user_profiles_v3 WHERE uid=?) "
         "ORDER BY m.planned_end_at LIMIT ?")
+                      .arg(kMelColumns, kMelFrom));
+    query.addBindValue(QString::fromStdString(userId.value()));
+    query.addBindValue(limit);
+    if (!query.exec())
+        return out;
+    while (query.next())
+        if (const auto mel = melFromQuery(query))
+            out.push_back(*mel);
+    return out;
+}
+
+std::vector<Domain::Mel> SqlMelRepository::findByUser(const Domain::Uid &userId, int limit)
+{
+    std::vector<Domain::Mel> out;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT %1%2 WHERE m.user_id=(SELECT id FROM user_profiles_v3 WHERE uid=?) "
+        "ORDER BY m.id DESC LIMIT ?")
                       .arg(kMelColumns, kMelFrom));
     query.addBindValue(QString::fromStdString(userId.value()));
     query.addBindValue(limit);

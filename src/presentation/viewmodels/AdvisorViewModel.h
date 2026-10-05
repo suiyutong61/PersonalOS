@@ -21,6 +21,10 @@ class AdvisorViewModel : public QObject
     Q_PROPERTY(bool detailVisible READ detailVisible NOTIFY detailChanged)
     Q_PROPERTY(QString detailQuestion READ detailQuestion NOTIFY detailChanged)
     Q_PROPERTY(QString detailAnswer READ detailAnswer NOTIFY detailChanged)
+    Q_PROPERTY(bool detailConflict READ detailConflict NOTIFY detailChanged)
+    Q_PROPERTY(QString pendingQuestion READ pendingQuestion NOTIFY pendingQuestionChanged)
+    // 最近一次咨询回答是否存在知识冲突（DR-028 界面警示）
+    Q_PROPERTY(bool latestConflict READ latestConflict NOTIFY dataChanged)
     QML_ELEMENT
 
 public:
@@ -43,12 +47,17 @@ public:
     bool detailVisible() const { return m_detailVisible; }
     QString detailQuestion() const { return m_detailQuestion; }
     QString detailAnswer() const { return m_detailAnswer; }
+    bool detailConflict() const { return m_detailConflict; }
+    bool latestConflict() const { return m_latestConflict; }
+    QString pendingQuestion() const { return m_pendingQuestion; }
 
 signals:
     void pageStateChanged();
     void lastErrorChanged();
     void dataChanged();
     void detailChanged();
+    void answerGenerated();
+    void pendingQuestionChanged();
 
 private:
     void setState(const QString &state);
@@ -60,6 +69,9 @@ private:
     bool m_detailVisible = false;
     QString m_detailQuestion;
     QString m_detailAnswer;
+    bool m_detailConflict = false;
+    bool m_latestConflict = false;
+    QString m_pendingQuestion;
 };
 
 } // namespace PersonOS

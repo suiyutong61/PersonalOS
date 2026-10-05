@@ -18,18 +18,23 @@ class CalendarViewModel : public QObject
     Q_PROPERTY(ListItemModel *remindersModel READ remindersModel CONSTANT)
     Q_PROPERTY(ListItemModel *dueModel READ dueModel CONSTANT)
     Q_PROPERTY(ListItemModel *deliveriesModel READ deliveriesModel CONSTANT)
+    Q_PROPERTY(ListItemModel *activeMelsModel READ activeMelsModel CONSTANT)
     QML_ELEMENT
 
 public:
     explicit CalendarViewModel(QObject *parent = nullptr);
 
     Q_INVOKABLE void refresh();
+    // 规则管理（R3.3.1：用户可设置提前量、暂停或关闭单项提醒）
+    Q_INVOKABLE void createMelReminder(const QString &melUid, int offsetMin);
+    Q_INVOKABLE void setRuleEnabled(const QString &ruleUid, bool enabled);
 
     QString pageState() const { return m_pageState; }
     QString lastError() const { return m_lastError; }
     ListItemModel *remindersModel() { return &m_remindersModel; }
     ListItemModel *dueModel() { return &m_dueModel; }
     ListItemModel *deliveriesModel() { return &m_deliveriesModel; }
+    ListItemModel *activeMelsModel() { return &m_activeMelsModel; }
 
 signals:
     void pageStateChanged();
@@ -44,6 +49,7 @@ private:
     ListItemModel m_remindersModel;
     ListItemModel m_dueModel;
     ListItemModel m_deliveriesModel;
+    ListItemModel m_activeMelsModel;
 };
 
 } // namespace PersonOS

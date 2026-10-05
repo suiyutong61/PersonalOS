@@ -47,6 +47,7 @@ public:
     std::vector<Domain::MethodStep> methodStepsOf(const Domain::Uid &versionUid) override;
     std::vector<Domain::EvidenceFragment> evidenceFragmentsOf(
         const Domain::Uid &versionUid) override;
+    bool hasContradictingEvidence(const Domain::Uid &versionUid) override;
     Application::SaveResult deleteItemCascade(const Domain::Uid &uid) override;
     int countPapersInDomain(const std::string &domainCode) override;
     int derivedCandidateCount(const Domain::Uid &paperItemUid,

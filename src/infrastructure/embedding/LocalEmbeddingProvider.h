@@ -29,11 +29,13 @@ public:
     Application::Result<std::vector<float>, Application::ApplicationError> embedDocument(
         const std::string &text) override;
     int dimension() const override { return 384; }
-    // 模型标识(含量化版本):向量行按模型隔离,不同模型空间不混算余弦
-    std::string modelId() const override
-    {
-        return "local:multilingual-e5-small:q8";
-    }
+    // 模型标识(含量化版本 + 模型文件 SHA-256 前缀):向量行按模型隔离,
+    // 不同模型空间不混算余弦;模型文件更换后哈希前缀变化 → 旧向量行在
+    // 新模型下不再命中,启动回填自动为新模型重嵌入(旧行保留不删除)
+    std::string modelId() const override;
+
+    // 模型文件 SHA-256 前 8 位(首次计算后缓存;文件缺失返回 "missing")
+    std::string modelFileHashPrefix() const;
 
     // e5 系列要求任务前缀;分类/检索分别使用两侧
     Application::Result<std::vector<float>, Application::ApplicationError> embedQuery(
@@ -61,6 +63,7 @@ private:
     mutable QMutex m_mutex;
     bool m_ready = false;
     QString m_lastError;
+    mutable std::string m_modelHashPrefix;   // 首次计算后缓存
     std::unique_ptr<SentencePieceUnigram> m_tokenizer;
     void *m_env = nullptr;        // OrtEnv*
     void *m_session = nullptr;    // OrtSession*

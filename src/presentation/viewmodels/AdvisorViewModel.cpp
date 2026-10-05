@@ -43,6 +43,8 @@ void AdvisorViewModel::refresh()
 
     // 历史 = 咨询决策记录（知识支持状态可追溯）
     QVariantList rows;
+    bool first = true;
+    m_latestConflict = false;
     for (const auto &decision : repo.listDecisions("advisor_answer", 100)) {
         QVariantMap map;
         map.insert(QStringLiteral("uid"), QString::fromStdString(decision.uid.value()));
@@ -67,13 +69,27 @@ void AdvisorViewModel::refresh()
                     : (decision.sourceMode == Domain::SourceMode::PartiallyGrounded
                            ? "partially_grounded"
                            : "ungrounded"));
-        map.insert(QStringLiteral("badge"), Presentation::sourceModeLabel(rawSourceMode));
+        // 知识冲突独立标志（DR-028；R4.8 冲突不混同知识不足）：
+        // 徽标叠加"含冲突"文案并提级 warning 色调
+        const bool conflict = QJsonDocument::fromJson(
+                                  QByteArray::fromStdString(decision.warningJson))
+                                  .object()
+                                  .value(QStringLiteral("conflict"))
+                                  .toBool();
+        if (first)
+            m_latestConflict = conflict;   // listDecisions 最新在前
+        first = false;
+        map.insert(QStringLiteral("badge"),
+                   Presentation::sourceModeLabel(rawSourceMode)
+                       + (conflict ? QStringLiteral(" · 含冲突") : QString()));
         map.insert(QStringLiteral("badgeTone"),
-                   decision.sourceMode == Domain::SourceMode::Ungrounded
-                       ? QStringLiteral("warning")
-                       : QStringLiteral("info"));
+                   conflict ? QStringLiteral("warning")
+                            : (decision.sourceMode == Domain::SourceMode::Ungrounded
+                                   ? QStringLiteral("warning")
+                                   : QStringLiteral("info")));
         map.insert(QStringLiteral("detail"), answer);
-        rows.append(map);
+        // 仓储按最新在前返回；聊天界面按时间正序显示，最新问答落在底部。
+        rows.prepend(map);
     }
     m_historyModel.replace(rows);
     setState(rows.isEmpty() ? QStringLiteral("empty") : QStringLiteral("ready"));
@@ -82,6 +98,10 @@ void AdvisorViewModel::refresh()
 
 void AdvisorViewModel::send(const QString &question)
 {
+    if (m_pageState == QStringLiteral("ai_waiting")) {
+        setError(QStringLiteral("AI 正在处理上一个问题，请稍候"));
+        return;
+    }
     if (question.trimmed().isEmpty()) {
         setState(QStringLiteral("conflict"));
         setError(QStringLiteral("问题不能为空"));
@@ -109,10 +129,12 @@ void AdvisorViewModel::send(const QString &question)
     }
 
     // 后台线程执行完整管线：领域配置 → 状态上下文 → 检索/快照 → AI → 契约校验 → 决策记录
+    m_pendingQuestion = question.trimmed();
+    emit pendingQuestionChanged();
     setState(QStringLiteral("ai_waiting"));
     const QString dbPath = DatabaseManager::instance().databasePath();
     const std::string text = question.trimmed().toStdString();
-    QtConcurrent::run([this, userUid = *userUid, dbPath, text]() {
+    QtConcurrent::run([userUid = *userUid, dbPath, text]() {
         QString error;
         Infrastructure::DatabaseConnectionFactory factory(dbPath);
         QString openError;
@@ -127,10 +149,15 @@ void AdvisorViewModel::send(const QString &question)
         Infrastructure::DatabaseConnectionFactory::closeCurrentThreadConnection(
             QStringLiteral("ai_advisor"));
         return error;
-    }).then([this](QString error) {
+    }).then(this, [this](QString error) {
         if (error.isEmpty()) {
             refresh();
+            m_pendingQuestion.clear();
+            emit pendingQuestionChanged();
+            emit answerGenerated();
         } else {
+            m_pendingQuestion.clear();
+            emit pendingQuestionChanged();
             setState(QStringLiteral("error"));
             setError(error);
         }
@@ -164,6 +191,11 @@ void AdvisorViewModel::openDetail(const QString &uid)
     m_detailAnswer = candidateDoc.object().value(QStringLiteral("user_text")).toString();
     if (m_detailAnswer.isEmpty() && !decision->candidateJson.empty())
         m_detailAnswer = QStringLiteral("（回答内容无法解析，原始记录已保存）");
+    m_detailConflict = QJsonDocument::fromJson(
+                           QByteArray::fromStdString(decision->warningJson))
+                           .object()
+                           .value(QStringLiteral("conflict"))
+                           .toBool();
     m_detailVisible = true;
     emit detailChanged();
 }

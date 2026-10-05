@@ -30,6 +30,8 @@ public:
     virtual SaveResult insertRule(const Domain::ReminderRule &rule) = 0;
     virtual SaveResult updateRule(const Domain::ReminderRule &rule, int expectedRevision) = 0;
     virtual std::vector<Domain::ReminderRule> enabledRules() = 0;
+    // 全部规则（含已停用；规则管理 UI 用）
+    virtual std::vector<Domain::ReminderRule> allRules() = 0;
     // 某 owner 的全部规则（含已停用：停用是用户决定，不得再自动重建默认规则）
     virtual std::vector<Domain::ReminderRule> rulesForOwner(const std::string &ownerType,
                                                             const std::string &ownerUid) = 0;

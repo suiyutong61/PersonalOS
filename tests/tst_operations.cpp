@@ -189,6 +189,99 @@ private slots:
             reminders.disableRule(quietRuleUid, updatedQuiet.revision + 1);
         QVERIFY(disabled && !disabled.value().enabled);
         QVERIFY(reminders.ensureMelDeadlineReminders(userUid, 50).value() == 0);
+
+        // 重新启用（规则管理 UI 开关）
+        const auto reenabled =
+            reminders.enableRule(quietRuleUid, updatedQuiet.revision + 2);
+        QVERIFY(reenabled && reenabled.value().enabled);
+    }
+
+    void reminderUsesAbsoluteTimeAndRechecksEligibility()
+    {
+        Infrastructure::SqlMelRepository melRepo(DatabaseManager::instance().database(),
+                                                 m_clock);
+        Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
+                                                     m_clock);
+        FakeNotifications notifications;
+        Application::ReminderService reminders(repo, melRepo, notifications, m_uids, m_clock);
+
+        // 同一绝对时间使用 +08:00 表达。旧代码按 ISO 字符串比较，08:00+08:00
+        // 会被错误判断为晚于 00:30Z，从而永不调度。
+        const auto offsetMel = createActiveMel(
+            melRepo, QStringLiteral("时区偏移提醒 MEL"),
+            "2020-01-01T08:00:00+08:00", "2020-01-04T08:00:00+08:00");
+        QVERIFY(!offsetMel.empty());
+        Application::ReminderService::RuleInput offsetInput;
+        offsetInput.ownerType = "mel";
+        offsetInput.ownerUid = offsetMel.value();
+        offsetInput.offsetMin = 0;
+        const auto offsetRule = reminders.createRule(offsetInput);
+        QVERIFY(offsetRule);
+        QVERIFY(reminders.scheduleDue("2020-01-04T00:30:00Z").value() >= 1);
+        QSqlQuery offsetDelivery(DatabaseManager::instance().database());
+        offsetDelivery.prepare(QStringLiteral(
+            "SELECT COUNT(*) FROM reminder_deliveries_v6 WHERE rule_id="
+            "(SELECT id FROM reminder_rules_v6 WHERE uid=?)"));
+        offsetDelivery.addBindValue(
+            QString::fromStdString(offsetRule.value().uid.value()));
+        QVERIFY(offsetDelivery.exec() && offsetDelivery.next());
+        QCOMPARE(offsetDelivery.value(0).toInt(), 1);
+        QCOMPARE(reminders.dispatchPending().value(), 1);
+        QCOMPARE(notifications.delivered, 1);
+    }
+
+    void reminderRechecksEligibilityBeforeDispatch()
+    {
+        Infrastructure::SqlMelRepository melRepo(DatabaseManager::instance().database(),
+                                                 m_clock);
+        Infrastructure::SqlOperationsRepository repo(DatabaseManager::instance().database(),
+                                                     m_clock);
+        FakeNotifications notifications;
+        Application::ReminderService reminders(repo, melRepo, notifications, m_uids, m_clock);
+
+        // 已排队后停用规则：失败重试/待投递必须重新尊重用户决定。
+        const auto disabledMel = createOverdueMel(
+            melRepo, QStringLiteral("停用后不投递 MEL"), "2020-01-08T00:00:00Z");
+        Application::ReminderService::RuleInput disabledInput;
+        disabledInput.ownerType = "mel";
+        disabledInput.ownerUid = disabledMel.value();
+        const auto disabledRule = reminders.createRule(disabledInput);
+        QVERIFY(disabledRule);
+        QVERIFY(reminders.scheduleDue("2020-02-01T00:00:00Z").value() >= 1);
+        QVERIFY(reminders.disableRule(disabledRule.value().uid,
+                                      disabledRule.value().revision));
+
+        // 已排队后 MEL 执行完成：同样不得再弹 Deadline 提醒。
+        const auto completedMel = createOverdueMel(
+            melRepo, QStringLiteral("完成后不投递 MEL"), "2020-01-09T00:00:00Z");
+        Application::ReminderService::RuleInput completedInput;
+        completedInput.ownerType = "mel";
+        completedInput.ownerUid = completedMel.value();
+        const auto completedRule = reminders.createRule(completedInput);
+        QVERIFY(completedRule);
+        QVERIFY(reminders.scheduleDue("2020-02-01T00:00:00Z").value() >= 1);
+        QSqlQuery complete(DatabaseManager::instance().database());
+        complete.prepare(QStringLiteral(
+            "UPDATE mels_v4 SET state='execution_complete' WHERE uid=?"));
+        complete.addBindValue(QString::fromStdString(completedMel.value()));
+        QVERIFY(complete.exec());
+
+        notifications.delivered = 0;
+        QVERIFY(reminders.dispatchPending());
+        QCOMPARE(notifications.delivered, 0);
+        QSqlQuery suppressed(DatabaseManager::instance().database());
+        suppressed.prepare(QStringLiteral(
+            "SELECT status FROM reminder_deliveries_v6 WHERE rule_id="
+            "(SELECT id FROM reminder_rules_v6 WHERE uid=?)"));
+        suppressed.bindValue(0,
+            QString::fromStdString(disabledRule.value().uid.value()));
+        QVERIFY(suppressed.exec() && suppressed.next());
+        QCOMPARE(suppressed.value(0).toString(), QStringLiteral("suppressed"));
+        suppressed.finish();
+        suppressed.bindValue(0,
+            QString::fromStdString(completedRule.value().uid.value()));
+        QVERIFY(suppressed.exec() && suppressed.next());
+        QCOMPARE(suppressed.value(0).toString(), QStringLiteral("suppressed"));
     }
 
     void deliveryRetryAndOwnerRulesAtRepositoryLevel()
@@ -210,6 +303,13 @@ private slots:
         disabled.enabled = false;
         QVERIFY(repo.updateRule(disabled, 1).ok);
         QCOMPARE(repo.rulesForOwner("mel", "00000000-0000-0000-0000-0000000000de").size(), 1);
+
+        // allRules 含停用规则（规则管理 UI 需要展示全部规则）
+        bool sawMine = false;
+        for (const auto &allRule : repo.allRules())
+            if (allRule.uid == rule.uid)
+                sawMine = true;
+        QVERIFY(sawMine);
 
         // 投递行：failed 重选直到 attempt_count=3，之后终态失败不再重选
         Domain::ReminderDelivery delivery;
@@ -372,6 +472,12 @@ private slots:
         QVERIFY(created);
         QVERIFY(melUseCases.submitForConfirmation(created.value().mel.uid, 1));
         QVERIFY(melUseCases.confirmAndActivate(created.value().mel.uid, 2));
+
+        // findByUser：含非活跃 MEL（候选/历史），最新在前（首个 MEL 候选展示）
+        const auto allMels =
+            melRepo.findByUser(*Domain::Uid::parse(kUserUid), 10);
+        QVERIFY(!allMels.empty());
+        QVERIFY(allMels.front().uid == created.value().mel.uid);
 
         // 第一次恢复：找到逾期 MEL 并结算
         const auto first = recovery.run();

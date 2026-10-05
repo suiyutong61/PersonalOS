@@ -5,6 +5,8 @@
 #include <QJsonObject>
 #include <QSet>
 
+#include <cmath>
+
 #include "application/audit/Audit.h"
 #include "application/foundation/ContractValidator.h"
 #include "application/foundation/SupportAssessor.h"
@@ -63,6 +65,19 @@ const char *methodContractHint = R"TEXT(
 "applicability":"适用条件","risks":"风险与不适用情形"}]}
 )TEXT";
 
+const char *progressContractHint = R"TEXT(
+你正在把用户的自然语言汇报转换成一份“待确认的正式进度更新”。不要要求用户填写百分比。
+task_updates 必须覆盖任务列表中的全部任务且不能重复；progress 为 0～1，state 与其严格一致：
+0=pending，0到1之间=active，1=completed。mel_progress 等于全部 required 任务进度的平均值。
+只有全部 required 任务完成时 execution_complete 才能为 true。无法可靠判断的 actual_minutes 填 0。
+输出 JSON（progress_update_v2）：{"observations":["观察"],"task_updates":[
+{"task_uid":"任务 uid","progress":0.6,"state":"pending|active|completed",
+"actual_minutes":30,"rationale":"判断依据"}],"mel_progress":0.6,
+"learned_contents":["本次实际完成的内容"],"next_action":"下一步唯一动作",
+"execution_complete":false,"user_text":"面向用户的完整说明",
+"source_mode":"grounded|partially_grounded|ungrounded"}
+)TEXT";
+
 const char *advisorContractHint = R"TEXT(
 输出 JSON（generic_v1）：{"user_text":"面向用户的完整回答（含知识支持程度说明）",
 "source_mode":"grounded|partially_grounded|ungrounded"}
@@ -103,7 +118,9 @@ std::string protocolPrompt(const DomainConfig &config)
                        "3) 用户是最终决策者，你只生成候选，不直接生效；"
                        "4) 结合用户现实状态（精力/时间/负荷）给出可持续安排，"
                        "不按理论最大时间填满，保留缓冲与休息；"
-                       "5) 不把休息或暂停解释为不自律。领域：")
+                       "5) 不把休息或暂停解释为不自律；"
+                       "6) 请求中 _conflict=true 表示检索到的知识存在重要冲突，"
+                       "结论必须降低强度并明确说明不确定性。领域：")
            + config.domainCode + "，工作流：" + [&config]() {
                  std::string workflows;
                  for (const auto &workflow : config.workflows)
@@ -119,11 +136,11 @@ AiPlanningUseCases::AiPlanningUseCases(
     KnowledgeRepository &knowledge, GoalRepository &goals, MelRepository &mels,
     RouteRepository &routes, StateRepository &states,
     DomainManifestRepository &manifests, DecisionStore &decisions, UuidPort &uids,
-    const Domain::Clock &clock)
+    const Domain::Clock &clock, UnitOfWork &unitOfWork)
     : m_gateway(gateway), m_configs(configs), m_retrieval(retrieval),
       m_knowledge(knowledge), m_goals(goals),
       m_mels(mels), m_routes(routes), m_states(states), m_manifests(manifests),
-      m_decisions(decisions), m_uids(uids), m_clock(clock)
+      m_decisions(decisions), m_uids(uids), m_clock(clock), m_unitOfWork(unitOfWork)
 {}
 
 Result<AiPlanningUseCases::CalibrationContext, ApplicationError>
@@ -152,10 +169,46 @@ AiPlanningUseCases::calibrate(const std::string &purpose, const std::string &que
     const double topScore = retrieved.value().hits.empty()
                                 ? 0.0
                                 : retrieved.value().hits.front().finalScore;
+
+    // 知识冲突确定性检测（DR-028 第一版）：①命中条目间存在 contradicts
+    // 关系（知识级）；②命中条目当前版本挂有 contradicts 证据链路（证据级，
+    // paper analysis 已真实写入）。冲突是独立标志，不影响三档覆盖判定；
+    // 判断理由写入 reasoning（threshold 即"存在 contradicts 关系"，不写死）。
+    bool materialConflict = false;
+    std::string conflictReason;
+    for (const auto &hit : retrieved.value().hits) {
+        const auto parsed = Domain::Uid::parse(hit.ownerUid);
+        if (!parsed)
+            continue;
+        for (const auto &relation : m_knowledge.relationsOf(*parsed))
+            if (relation.relation == "contradicts") {
+                materialConflict = true;
+                conflictReason = "retrieved items include contradicts relation";
+                break;
+            }
+        if (materialConflict)
+            break;
+        const auto item = m_knowledge.findItem(*parsed);
+        if (item && item->currentVersionUid && !item->currentVersionUid->empty()) {
+            const auto versionUid = Domain::Uid::parse(*item->currentVersionUid);
+            if (versionUid && m_knowledge.hasContradictingEvidence(*versionUid)) {
+                materialConflict = true;
+                conflictReason = "retrieved item has contradicting evidence links";
+                break;
+            }
+        }
+    }
+
     SupportAssessmentInput assessmentInput;
     assessmentInput.totalKeySubQuestions = keySubQuestions;
     assessmentInput.coveredSubQuestions = topScore >= 0.6 ? 1 : 0;
-    const auto support = SupportAssessor::assess(assessmentInput);
+    assessmentInput.hasMaterialConflict = materialConflict;
+    auto support = SupportAssessor::assess(assessmentInput);
+    // 判断理由写入 reasoning（确定性规则名即理由；AI 评估接入后在此合并）
+    if (!conflictReason.empty())
+        support.reasoning = support.reasoning.empty()
+                                ? conflictReason
+                                : support.reasoning + "; " + conflictReason;
 
     // 知识快照（同内容幂等；后续复现不受版本漂移影响）
     QJsonArray versions;
@@ -326,7 +379,8 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
         + jsonEscape(goal->description) + "\",\"user_guidance\":\""
         + jsonEscape(userGuidance) + "\",\"_instruction\":\"" + instruction
         + "\",\"_state\":" + calibration.value().stateContextJson + ",\"_knowledge\":"
-        + calibration.value().knowledgeSummary + "}";
+        + calibration.value().knowledgeSummary + ",\"_conflict\":"
+        + (calibration.value().hasMaterialConflict ? "true" : "false") + "}";
 
     const auto job = runJob("route_proposal", "route_proposal_v1", payload,
                             calibration.value());
@@ -399,6 +453,10 @@ AiPlanningUseCases::generateRouteProposal(const Domain::Uid &userId,
     decision.candidateJson = job.value().userText;
     decision.rationale = input.rationale;
     decision.sourceMode = calibration.value().sourceMode;
+    // 知识冲突独立标志（DR-028；R4.8 冲突不混同知识不足）
+    decision.warningJson = calibration.value().hasMaterialConflict
+                               ? "{\"conflict\":true}"
+                               : "{}";
     decision.userStatus = Domain::DecisionUserStatus::Pending;
     decision.createdAt = m_clock.utcIso();
     const auto savedDecision = m_decisions.insertDecision(decision);
@@ -501,8 +559,9 @@ AiPlanningUseCases::generateStageDetail(const Domain::Uid &userId, const Domain:
         + jsonEscape(routeRationale) + "\",\"user_guidance\":\""
         + jsonEscape(userGuidance) + "\",\"_instruction\":\"" + instruction
         + "\",\"_state\":" + calibration.value().stateContextJson + ",\"_knowledge\":"
-        + calibration.value().knowledgeSummary + ",\"_material_candidates\":"
-        + materialCandidatesJson + "}";
+        + calibration.value().knowledgeSummary + ",\"_conflict\":"
+        + (calibration.value().hasMaterialConflict ? "true" : "false")
+        + ",\"_material_candidates\":" + materialCandidatesJson + "}";
 
     const auto job = runJob("stage_detail", "stage_detail_v1", payload,
                             calibration.value());
@@ -607,6 +666,10 @@ AiPlanningUseCases::generateStageDetail(const Domain::Uid &userId, const Domain:
     decision.candidateJson = job.value().userText;
     decision.rationale = detail.rationale;
     decision.sourceMode = calibration.value().sourceMode;
+    // 知识冲突独立标志（DR-028；R4.8 冲突不混同知识不足）
+    decision.warningJson = calibration.value().hasMaterialConflict
+                               ? "{\"conflict\":true}"
+                               : "{}";
     decision.userStatus = Domain::DecisionUserStatus::Pending;
     decision.createdAt = m_clock.utcIso();
     // 关联底层任务(物理删除联动先例,与 askAdvisor 同款)
@@ -658,7 +721,8 @@ AiPlanningUseCases::generateMelProposal(const Domain::Uid &userId,
     const std::string payload =
         "{\"goal_uid\":\"" + goalUid.value() + "\",\"_instruction\":\""
         + instruction + "\",\"_state\":" + calibration.value().stateContextJson
-        + ",\"_knowledge\":" + calibration.value().knowledgeSummary + "}";
+        + ",\"_knowledge\":" + calibration.value().knowledgeSummary + ",\"_conflict\":"
+        + (calibration.value().hasMaterialConflict ? "true" : "false") + "}";
 
     const auto job = runJob("mel_proposal", "mel_proposal_v1", payload,
                             calibration.value());
@@ -761,6 +825,10 @@ AiPlanningUseCases::generateMelProposal(const Domain::Uid &userId,
     decision.candidateJson = job.value().userText;
     decision.rationale = input.rationale;
     decision.sourceMode = calibration.value().sourceMode;
+    // 知识冲突独立标志（DR-028；R4.8 冲突不混同知识不足）
+    decision.warningJson = calibration.value().hasMaterialConflict
+                               ? "{\"conflict\":true}"
+                               : "{}";
     decision.userStatus = Domain::DecisionUserStatus::Pending;
     decision.createdAt = m_clock.utcIso();
     const auto savedDecision = m_decisions.insertDecision(decision);
@@ -889,7 +957,8 @@ AiPlanningUseCases::askAdvisor(const Domain::Uid &userId, const std::string &que
     const std::string payload =
         "{\"_instruction\":\"" + instruction + "\",\"question\":\""
         + jsonEscape(question) + "\",\"_knowledge\":"
-        + calibration.value().knowledgeSummary + "}";
+        + calibration.value().knowledgeSummary + ",\"_conflict\":"
+        + (calibration.value().hasMaterialConflict ? "true" : "false") + "}";
     const auto job = runJob("advisor_answer", "generic_v1", payload, calibration.value());
     if (!job)
         return Result<ProposalOutput, ApplicationError>::failure(job.error());
@@ -917,6 +986,308 @@ AiPlanningUseCases::askAdvisor(const Domain::Uid &userId, const std::string &que
     ProposalOutput output = job.value();
     output.decisionUid = decision.uid.value();
     return Result<ProposalOutput, ApplicationError>::success(std::move(output));
+}
+
+Result<AiPlanningUseCases::ProposalOutput, ApplicationError>
+AiPlanningUseCases::reviewProgress(const Domain::Uid &userId, const Domain::Uid &melUid,
+                                   const std::string &reportText)
+{
+    const auto mel = m_mels.findByUid(melUid);
+    if (!mel)
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::NotFound, "mel not found", {}, false});
+    if (mel->userId != userId)
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::NotFound, "mel not found for user", {}, false});
+    if (mel->state != Domain::MelState::Active
+        && mel->state != Domain::MelState::Paused)
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Conflict,
+             "progress review requires an active or paused mel", {}, false});
+    const auto tasks = m_mels.tasksOf(melUid);
+    if (tasks.empty())
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "mel has no tasks", {}, false});
+
+    std::string queryText = mel->title;
+    for (const auto &task : tasks)
+        queryText += " " + task.title;
+    queryText += " " + reportText;
+    auto calibration = calibrate("progress_review", queryText, "{}", kKeySubQuestions);
+    if (!calibration)
+        return Result<ProposalOutput, ApplicationError>::failure(calibration.error());
+
+    StateContextBuilder contextBuilder(m_states, m_clock);
+    const auto stateContext = contextBuilder.build(userId, m_clock.utcIso());
+    calibration.value().stateContextJson =
+        stateContext ? stateContext.value() : std::string("{}");
+
+    // 候选方法 uid（与 generateMethodSuggestions 同纪律：建议只能引用召回候选）
+    std::vector<std::string> candidateMethodUids;
+    {
+        const QJsonDocument document = QJsonDocument::fromJson(
+            QByteArray::fromStdString(calibration.value().knowledgeVersionsJson));
+        for (const auto &value : document.array())
+            candidateMethodUids.push_back(value.toString().toStdString());
+    }
+
+    // 任务列表（AI 只能引用这些 task_uid）
+    std::string tasksPayload = "[";
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        if (i)
+            tasksPayload += ",";
+        tasksPayload += "{\"task_uid\":\"" + tasks[i].uid.value() + "\",\"title\":\""
+                        + jsonEscape(tasks[i].title) + "\",\"progress\":"
+                        + std::to_string(tasks[i].progress) + ",\"state\":\""
+                        + Domain::toString(tasks[i].state) + "\",\"required\":"
+                        + (tasks[i].required ? "true" : "false") + "}";
+    }
+    tasksPayload += "]";
+    std::string methodCandidates = "[";
+    for (size_t i = 0; i < candidateMethodUids.size(); ++i) {
+        if (i)
+            methodCandidates += ",";
+        methodCandidates += "\"" + candidateMethodUids[i] + "\"";
+    }
+    methodCandidates += "]";
+
+    const std::string instruction =
+        jsonEscape(protocolPrompt(calibration.value().config) + std::string(" ")
+                   + std::string(progressContractHint));
+    const std::string payload =
+        "{\"mel_uid\":\"" + melUid.value() + "\",\"mel_title\":\""
+        + jsonEscape(mel->title) + "\",\"deadline\":\"" + mel->plannedEndAt
+        + "\",\"report_text\":\"" + jsonEscape(reportText)
+        + "\",\"tasks\":" + tasksPayload + ",\"_instruction\":\"" + instruction
+        + "\",\"_state\":" + calibration.value().stateContextJson
+        + ",\"_knowledge\":" + calibration.value().knowledgeSummary
+        + ",\"_method_candidates\":" + methodCandidates + ",\"_conflict\":"
+        + (calibration.value().hasMaterialConflict ? "true" : "false") + "}";
+
+    const auto job = runJob("progress_review", "progress_update_v2", payload,
+                            calibration.value());
+    if (!job)
+        return Result<ProposalOutput, ApplicationError>::failure(job.error());
+
+    DomainRegistry registry(m_manifests);
+    const auto config = registry.load("learning");
+    if (!config)
+        return Result<ProposalOutput, ApplicationError>::failure(config.error());
+    DecisionValidator validator(m_goals);
+    const auto outcome =
+        validator.validate("progress_update_v2", job.value().userText, config.value(), userId);
+    if (!outcome.ok) {
+        std::string errors;
+        for (const auto &error : outcome.errors)
+            errors += error + ";";
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "candidate rejected by hard constraints: " + errors, {},
+             false});
+    }
+
+    // 用例层校验：AI 必须覆盖本 MEL 全部任务且不得重复；总体值与完成判定重算核对。
+    const QJsonObject proposal =
+        QJsonDocument::fromJson(QByteArray::fromStdString(job.value().userText)).object();
+    QSet<QString> seen;
+    double requiredTotal = 0.0;
+    int requiredCount = 0;
+    bool allRequiredDone = true;
+    for (const auto &value : proposal.value(QStringLiteral("task_updates")).toArray()) {
+        const QJsonObject update = value.toObject();
+        const QString taskUid = update.value(QStringLiteral("task_uid")).toString();
+        if (seen.contains(taskUid))
+            return Result<ProposalOutput, ApplicationError>::failure(
+                {ErrorCode::Validation, "duplicate task update", {}, false});
+        seen.insert(taskUid);
+        const auto found = std::find_if(tasks.begin(), tasks.end(), [&](const auto &task) {
+            return task.uid.value() == taskUid.toStdString();
+        });
+        if (found == tasks.end())
+            return Result<ProposalOutput, ApplicationError>::failure(
+                {ErrorCode::Validation, "progress update references a task outside this mel", {}, false});
+        if (found->required) {
+            const double progress = update.value(QStringLiteral("progress")).toDouble();
+            requiredTotal += progress;
+            ++requiredCount;
+            allRequiredDone = allRequiredDone && progress >= 1.0;
+        }
+    }
+    if (seen.size() != static_cast<int>(tasks.size()))
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "progress update must cover every mel task", {}, false});
+    const double calculated = requiredCount > 0 ? requiredTotal / requiredCount : 0.0;
+    if (std::abs(calculated - proposal.value(QStringLiteral("mel_progress")).toDouble()) > 0.001
+        || allRequiredDone != proposal.value(QStringLiteral("execution_complete")).toBool())
+        return Result<ProposalOutput, ApplicationError>::failure(
+            {ErrorCode::Validation, "mel progress or completion flag is inconsistent", {}, false});
+
+    Domain::DecisionRecord decision;
+    decision.uid = m_uids.next();
+    decision.decisionType = "progress_review";
+    decision.aggregateType = "mel";
+    decision.aggregateUid = melUid.value();
+    std::string revisions = "[";
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        if (i) revisions += ",";
+        revisions += "{\"uid\":\"" + tasks[i].uid.value() + "\",\"revision\":"
+                     + std::to_string(tasks[i].revision) + "}";
+    }
+    revisions += "]";
+    decision.inputSnapshotJson = "{\"report\":\"" + jsonEscape(reportText)
+        + "\",\"mel_revision\":" + std::to_string(mel->revision)
+        + ",\"task_revisions\":" + revisions + "}";
+    decision.candidateJson = job.value().userText;
+    decision.rationale = "进度汇报审查（调整候选待用户确认）";
+    decision.sourceMode = calibration.value().sourceMode;
+    decision.warningJson = calibration.value().hasMaterialConflict
+                               ? "{\"conflict\":true}"
+                               : "{}";
+    decision.userStatus = Domain::DecisionUserStatus::Pending;
+    decision.createdAt = m_clock.utcIso();
+    decision.jobUid = job.value().jobUid;
+    // 同一 MEL 同时只保留一个待确认候选；新候选成功后旧候选自动失效并保留审计记录。
+    for (const auto &old : m_decisions.listDecisions("progress_review", 200))
+        if (old.aggregateUid == melUid.value()
+            && old.userStatus == Domain::DecisionUserStatus::Pending)
+            m_decisions.updateDecisionStatus(old.uid, "modified", std::nullopt);
+    const auto savedDecision = m_decisions.insertDecision(decision);
+    if (!savedDecision.ok)
+        return Result<ProposalOutput, ApplicationError>::failure(savedDecision.error);
+
+    Audit::record({"ai", {}, "mel.progress_review_generated", "mel", melUid.value(), "{}"});
+
+    ProposalOutput output = job.value();
+    output.aggregateUid = melUid.value();
+    output.decisionUid = decision.uid.value();
+    return Result<ProposalOutput, ApplicationError>::success(std::move(output));
+}
+
+Result<int, ApplicationError> AiPlanningUseCases::adoptProgressReview(
+    const Domain::Uid &decisionUid)
+{
+    const auto decision = m_decisions.findDecision(decisionUid);
+    if (!decision)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::NotFound, "decision not found", {}, false});
+    if (decision->decisionType != "progress_review")
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::Validation, "not a progress review decision", {}, false});
+    if (decision->userStatus != Domain::DecisionUserStatus::Pending)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::Conflict, "progress review is no longer pending", {}, false});
+    const auto melUid = Domain::Uid::parse(decision->aggregateUid);
+    if (!melUid)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::Validation, "invalid mel uid", {}, false});
+    const auto mel = m_mels.findByUid(*melUid);
+    if (!mel)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::NotFound, "mel not found", {}, false});
+    if (mel->state != Domain::MelState::Active
+        && mel->state != Domain::MelState::Paused)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::Conflict,
+             "progress review can only be adopted for an active or paused mel", {}, false});
+
+    // 确认时才把 AI 候选写入正式任务；快照修订不一致则整份候选作废。
+    int applied = 0;
+    const QJsonObject proposal = QJsonDocument::fromJson(
+        QByteArray::fromStdString(decision->candidateJson)).object();
+    const auto tasks = m_mels.tasksOf(*melUid);
+    const QJsonObject snapshot = QJsonDocument::fromJson(
+        QByteArray::fromStdString(decision->inputSnapshotJson)).object();
+    if (snapshot.value(QStringLiteral("mel_revision")).toInt(-1) != mel->revision)
+        return Result<int, ApplicationError>::failure(
+            {ErrorCode::Conflict, "mel changed after AI analysis; please report again", {}, false});
+    QHash<QString, int> expectedRevisions;
+    for (const auto &value : snapshot.value(QStringLiteral("task_revisions")).toArray()) {
+        const auto item = value.toObject();
+        expectedRevisions.insert(item.value(QStringLiteral("uid")).toString(),
+                                 item.value(QStringLiteral("revision")).toInt(-1));
+    }
+    const QString learned = [&proposal]() {
+        QStringList values;
+        for (const auto &v : proposal.value(QStringLiteral("learned_contents")).toArray())
+            values.append(v.toString());
+        return values.join(QStringLiteral("；"));
+    }();
+    const auto begun = m_unitOfWork.begin();
+    if (!begun)
+        return Result<int, ApplicationError>::failure(begun.error());
+    const auto rollbackFailure = [this](const ApplicationError &error) {
+        m_unitOfWork.rollback();
+        return Result<int, ApplicationError>::failure(error);
+    };
+    for (const auto &value : proposal.value(QStringLiteral("task_updates")).toArray()) {
+        const QJsonObject update = value.toObject();
+        const QString uidText = update.value(QStringLiteral("task_uid")).toString();
+        const auto found = std::find_if(tasks.begin(), tasks.end(), [&](const auto &task) {
+            return task.uid.value() == uidText.toStdString();
+        });
+        if (found == tasks.end() || expectedRevisions.value(uidText, -1) != found->revision)
+            return rollbackFailure(
+                {ErrorCode::Conflict, "task changed after AI analysis; please report again", {}, false});
+        auto updated = *found;
+        updated.progress = update.value(QStringLiteral("progress")).toDouble();
+        const auto parsedState = Domain::melTaskStateFrom(
+            update.value(QStringLiteral("state")).toString().toStdString());
+        if (!parsedState)
+            return rollbackFailure(
+                {ErrorCode::Validation, "invalid task state", {}, false});
+        updated.state = *parsedState;
+        updated.completedAt = updated.state == Domain::MelTaskState::Completed
+                                  ? std::optional<std::string>(m_clock.utcIso()) : std::nullopt;
+        const auto saved = m_mels.updateTask(updated, found->revision);
+        if (!saved.ok)
+            return rollbackFailure(saved.error);
+        const QString note = update.value(QStringLiteral("rationale")).toString()
+                             + (learned.isEmpty() ? QString() : QStringLiteral("；完成内容：") + learned);
+        const auto event = m_mels.appendProgressEvent(
+            *mel, updated, updated.progress, note.toStdString(),
+            "ai-progress:" + decisionUid.value() + ":" + updated.uid.value());
+        if (!event.ok)
+            return rollbackFailure(event.error);
+        const int actualMinutes = update.value(QStringLiteral("actual_minutes")).toInt();
+        if (actualMinutes > 0) {
+            const auto minutesEvent = m_mels.appendProgressEvent(
+                *mel, updated, actualMinutes, note.toStdString(),
+                "ai-progress-minutes:" + decisionUid.value() + ":" + updated.uid.value(),
+                "minutes", "user");
+            if (!minutesEvent.ok)
+                return rollbackFailure(minutesEvent.error);
+        }
+        ++applied;
+    }
+
+    if (proposal.value(QStringLiteral("execution_complete")).toBool()) {
+        auto completed = *mel;
+        completed.state = Domain::MelState::ExecutionComplete;
+        completed.updatedAt = m_clock.utcIso();
+        const auto saved = m_mels.update(completed, mel->revision);
+        if (!saved.ok)
+            return rollbackFailure(saved.error);
+        Domain::MelTransition transition;
+        transition.uid = m_uids.next(); transition.melId = mel->uid;
+        transition.fromState = mel->state; transition.toState = completed.state;
+        transition.trigger = "ai_progress_confirmed"; transition.actorType = "user";
+        transition.reason = "用户确认 AI 生成的进度候选";
+        transition.idempotencyKey = "ai-progress-complete:" + decisionUid.value();
+        transition.occurredAt = m_clock.utcIso(); transition.melRevisionAfter = mel->revision + 1;
+        const auto transitioned = m_mels.appendTransition(transition);
+        if (!transitioned.ok)
+            return rollbackFailure(transitioned.error);
+    }
+
+    const auto marked = m_decisions.updateDecisionStatus(
+        decisionUid, "accepted", std::optional<std::string>(decision->candidateJson));
+    if (!marked.ok)
+        return rollbackFailure(marked.error);
+    const auto committed = m_unitOfWork.commit();
+    if (!committed)
+        return Result<int, ApplicationError>::failure(committed.error());
+    Audit::record({"user", {}, "mel.progress_review_adopted", "mel", melUid->value(),
+                   "{\"applied\":" + std::to_string(applied) + "}"});
+    return Result<int, ApplicationError>::success(applied);
 }
 
 Result<void, ApplicationError> AiPlanningUseCases::markDecision(

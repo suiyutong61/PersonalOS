@@ -15,6 +15,7 @@
 #include "application/ports/RouteRepository.h"
 #include "application/ports/StateRepository.h"
 #include "application/ports/UuidPort.h"
+#include "application/ports/UnitOfWork.h"
 #include "application/usecases/advice/AdviceUseCases.h"   // DecisionStore
 #include "application/usecases/domain/DomainRegistry.h"   // DomainConfig
 #include "domain/ai/Ai.h"
@@ -48,7 +49,7 @@ public:
                        MelRepository &mels, RouteRepository &routes,
                        StateRepository &states,
                        DomainManifestRepository &manifests, DecisionStore &decisions,
-                       UuidPort &uids, const Domain::Clock &clock);
+                       UuidPort &uids, const Domain::Clock &clock, UnitOfWork &unitOfWork);
 
     // AI 生成路线候选（候选 → 用户确认后才成为当前路线）
     Result<ProposalOutput, ApplicationError> generateRouteProposal(
@@ -74,6 +75,16 @@ public:
     // 用户问题咨询（知识校准 + 通用问答契约；结果保存为决策记录）
     Result<ProposalOutput, ApplicationError> askAdvisor(const Domain::Uid &userId,
                                                         const std::string &question);
+
+    // 进度汇报审查（R3.2 用户随时提交进度 → AI 给出调整候选）：
+    // 输入=自然语言汇报；输出=AI 推断的全任务进度候选（用户确认后才正式落地）。
+    Result<ProposalOutput, ApplicationError> reviewProgress(
+        const Domain::Uid &userId, const Domain::Uid &melUid,
+        const std::string &reportText);
+
+    // 一键采用进度调整：决策 accepted + 落地可执行建议（方法绑定任务/
+    // 任务工作量调整），其余建议保留为已采用记录；单条落地失败跳过并如实返回
+    Result<int, ApplicationError> adoptProgressReview(const Domain::Uid &decisionUid);
 
     // 用户在界面确认/拒绝候选后更新决策记录状态
     Result<void, ApplicationError> markDecision(const std::string &decisionUid,
@@ -113,6 +124,7 @@ private:
     DecisionStore &m_decisions;
     UuidPort &m_uids;
     const Domain::Clock &m_clock;
+    UnitOfWork &m_unitOfWork;
 };
 
 } // namespace PersonOS::Application

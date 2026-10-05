@@ -1,8 +1,10 @@
 #include "infrastructure/embedding/LocalEmbeddingProvider.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QMutexLocker>
 
 #include <cmath>
 
@@ -28,6 +30,33 @@ const OrtApi *ortApi()
 LocalEmbeddingProvider::LocalEmbeddingProvider(QString modelPath, QString tokenizerPath)
     : m_modelPath(std::move(modelPath)), m_tokenizerPath(std::move(tokenizerPath))
 {}
+
+std::string LocalEmbeddingProvider::modelId() const
+{
+    return "local:multilingual-e5-small:q8:" + modelFileHashPrefix();
+}
+
+std::string LocalEmbeddingProvider::modelFileHashPrefix() const
+{
+    if (!m_modelHashPrefix.empty())
+        return m_modelHashPrefix;
+    QMutexLocker locker(&m_mutex);
+    if (!m_modelHashPrefix.empty())
+        return m_modelHashPrefix;
+    QFile modelFile(m_modelPath);
+    if (!modelFile.open(QIODevice::ReadOnly)) {
+        m_modelHashPrefix = "missing";   // 文件缺失：嵌入本身会降级
+        return m_modelHashPrefix;
+    }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (hash.addData(&modelFile)) {
+        const QByteArray digest = hash.result();
+        m_modelHashPrefix = digest.left(4).toHex().toStdString();
+    } else {
+        m_modelHashPrefix = "unreadable";
+    }
+    return m_modelHashPrefix;
+}
 
 LocalEmbeddingProvider &sharedLocalEmbedding()
 {

@@ -31,6 +31,11 @@ void applyPdfToolPaths();
 QString configuredPdfToTextPath();
 QString configuredTesseractPath();
 
+// 整体提醒开关（设置页；QSettings 持久化，默认开启。关闭时周期扫描
+// 保持完全静默，规则与投递记录保留，重新开启后恢复）
+bool remindersGloballyEnabled();
+void setRemindersGloballyEnabled(bool enabled);
+
 // ---- 展示层标签映射(内部枚举串 → 中文标签;未知值原样返回) ----
 QString knowledgeTypeLabel(const QString &type);        // paper/method/tip/...
 QString knowledgeStatusLabel(const QString &status);    // active/candidate/...
@@ -43,6 +48,7 @@ QString assessmentTypeLabel(const QString &type);
 QString routeStatusLabel(const QString &status);
 QString stageMaterialChoiceLabel(const QString &choice);   // pending/accepted/rejected
 QString reminderDeliveryStatusLabel(const QString &status);   // pending/delivered/failed/suppressed/cancelled
+QString progressSuggestionTypeLabel(const QString &type);   // method/task/reschedule/note
 QString contentMapStatusLabel(const QString &status);
 QString sourceTypeLabel(const QString &type);
 QString sourceModeLabel(const QString &mode);           // 知识支持程度三档

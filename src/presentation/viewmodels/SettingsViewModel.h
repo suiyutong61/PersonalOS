@@ -20,6 +20,7 @@ class SettingsViewModel : public QObject
     Q_PROPERTY(ListItemModel *backupsModel READ backupsModel CONSTANT)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY themeChanged)
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY themeChanged)
+    Q_PROPERTY(bool remindersEnabled READ remindersEnabled NOTIFY dataChanged)
     Q_PROPERTY(QString editingUid READ editingUid NOTIFY editingChanged)
     Q_PROPERTY(QString editingName READ editingName NOTIFY editingChanged)
     Q_PROPERTY(QString editingEndpoint READ editingEndpoint NOTIFY editingChanged)
@@ -51,6 +52,8 @@ public:
     Q_INVOKABLE void restoreBackup(const QString &uid);
     // 重建本地向量索引（后台：清空当前模型向量 → 全量回填 → 立即重种领域行）
     Q_INVOKABLE void rebuildVectorIndex();
+    // 整体提醒开关（QSettings 持久化；关闭时周期扫描保持静默，规则保留）
+    Q_INVOKABLE void setRemindersEnabled(bool enabled);
 
     QString pageState() const { return m_pageState; }
     QString lastError() const { return m_lastError; }
@@ -62,6 +65,7 @@ public:
     void setDarkMode(bool value);
     bool reducedMotion() const { return m_reducedMotion; }
     void setReducedMotion(bool value);
+    bool remindersEnabled() const { return m_remindersEnabled; }
 
     QString editingUid() const { return m_editingUid; }
     QString editingName() const { return m_editingName; }
@@ -86,6 +90,7 @@ private:
     QString m_notice;
     bool m_darkMode = false;
     bool m_reducedMotion = false;
+    bool m_remindersEnabled = true;
     QString m_editingUid;
     QString m_editingName;
     QString m_editingEndpoint;
